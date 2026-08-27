@@ -88,6 +88,20 @@ const STRINGS: Record<string, [string, string]> = {
   acShort: ["AC", "sieť"],
   sideFoot: ["no root, no daemon", "bez rootu, bez démona"],
   // settings window
+  anchor: ["Anchor", "Zakotvenie"],
+  side: ["Side", "Strana"],
+  sideRight: ["Right", "Vpravo"],
+  sideLeft: ["Left", "Vľavo"],
+  edge: ["Edge", "Hrana"],
+  edgeTop: ["Top", "Hore"],
+  edgeBottom: ["Bottom", "Dole"],
+  slot: ["Grid slot", "Slot mriežky"],
+  slotHint: ["rows down from the corner", "riadkov pod rohom"],
+  snap: ["Snap to grid", "Zarovnať na mriežku"],
+  snapHint: ["8 px lattice while dragging", "zarovnáva ťahanie na 8 px"],
+  placeNow: ["Place on the grid", "Umiestniť na mriežku"],
+  gridLead: ["The widget lands on a slot of the grid, like the system widgets.", "Widget dosadne na slot mriežky, ako systémové widgety."],
+
   tempUnit: ["Temperature unit", "Jednotka teploty"],
 
   orderHint: ["click the arrows to reorder the cards", "šipkami zoradíš karty"],

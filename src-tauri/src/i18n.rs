@@ -45,7 +45,14 @@ impl Lang {
             Self::Sk => "Nastavenia…",
         }
         }
-        pub fn quit(self) -> &'static str {
+        pub fn place(self) -> &'static str {
+        match self {
+            Self::En => "Place on the grid",
+            Self::Sk => "Umiestniť na mriežku",
+        }
+    }
+
+    pub fn quit(self) -> &'static str {
         match self {
             Self::En => "Quit Flash Stats",
             Self::Sk => "Ukončiť Flash Stats",

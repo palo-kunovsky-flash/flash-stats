@@ -30,6 +30,9 @@ export function normalizeOrder(order?: WidgetId[]): WidgetId[] {
 }
 export type Presentation = "desktop" | "wallpaper" | "floating" | "normal";
 
+/** Which screen corner the widget anchors to when it is placed on the grid. */
+export type Anchor = "top-right" | "top-left" | "bottom-right" | "bottom-left";
+
 export type Settings = {
   intervalMs: number;
   theme: "auto" | "dark" | "light";
@@ -47,6 +50,12 @@ export type Settings = {
   widgets: Record<WidgetId, boolean>;
   /** Temperature unit shown everywhere; sensors are stored in °C. */
   tempUnit: TempUnit;
+  /** Corner the widget is placed against. */
+  anchor: Anchor;
+  /** How many slots down from that corner; one slot is the widget's own height. */
+  slot: number;
+  /** Manual drags snap to this lattice so the widget lines up like system ones. */
+  snap: boolean;
   /** Card order, top to bottom. */
   order: WidgetId[];
   /** Remembered window position (physical px). */
@@ -86,6 +95,9 @@ export const DEFAULTS: Settings = {
   trayNet: true,
   trayColored: true,
   order: CARD_IDS,
+  anchor: "top-right",
+  slot: 0,
+  snap: true,
   tempUnit: "c",
   widgets: { cpu: true, gpu: true, memory: true, battery: true, network: true, disk: false, temps: true },
   pos: null,

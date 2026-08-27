@@ -34,6 +34,20 @@ PROBE_ROUNDS=1 cargo run --manifest-path src-tauri/Cargo.toml --bin probe
 FLASH_STATS_DEBUG=1    # verbose stderr: tick timings, sampler phases, UI logs
 ```
 
+## Positioning
+
+The bar is placed on a grid instead of being dropped anywhere: pick a side and an
+edge (right/top by default) and a slot — one slot is the widget's own height plus a
+16 px gap, so several of them stack into a tidy column like the system widgets.
+Manual drags snap to an 8 px lattice. Positions are clamped so the widget is always
+fully on the display it lands on, and the slot it does not fit into just clamps to
+the last row that does.
+
+`Place on the grid` (tray menu, or the button in Settings → Widget) is the recovery
+action: it shows the widget, orders it to the front of the desktop layer and puts it
+on its slot on the display with the menu bar. Use it when the bar ends up behind the
+system widgets or on a display that is switched off.
+
 ## Design notes
 
 - **No scrolling.** The window height is measured from the rendered content

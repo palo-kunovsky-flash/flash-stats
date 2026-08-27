@@ -253,6 +253,7 @@ fn build_menu(
         tray_net,
         None::<&str>,
     )?;
+    let place = MenuItem::with_id(app, "place", lang.place(), true, None::<&str>)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", lang.quit(), true, None::<&str>)?;
 
@@ -270,6 +271,7 @@ fn build_menu(
             &i5000,
             &sep2,
             &net,
+            &place,
             &sep3,
             &quit,
         ],
@@ -486,6 +488,15 @@ fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
                         .arg("-a")
                         .arg("Activity Monitor")
                         .spawn();
+                }
+                "place" => {
+                    // The widget can end up buried under the system widgets and
+                    // then cannot be grabbed; put it back on its grid slot.
+                    set_widget_visible(app, true);
+                    if let Some(window) = app.get_webview_window(WINDOW) {
+                        window::reassert(&window);
+                    }
+                    let _ = app.emit("widget://place", ());
                 }
                 "quit" => app.exit(0),
                 "tray-net" => {

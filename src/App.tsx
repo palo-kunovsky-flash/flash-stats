@@ -16,7 +16,8 @@ import {
   measureHeight,
   moveWindowTo,
   onScreen,
-  placeTopRight,
+  placeOnGrid,
+  snapToGrid,
   resizeToContent,
   watchMoves,
 } from "./lib/windowing";
@@ -144,15 +145,30 @@ export default function App() {
   }, [ready, settings.width, settings.widgets]);
 
   /* ------------------------------------------------ window: place & remember */
+  // Put the widget on its grid slot: chosen corner, `slot` rows down. Also the
+  // recovery action when it ends up behind the system widgets.
+  const placeNow = async (preferPrimary?: boolean) => {
+    const height = await resizeToContent(settings.width);
+    const position = await placeOnGrid({
+      anchor: settings.anchor,
+      slot: settings.slot,
+      width: settings.width,
+      height: height || measureHeight(),
+      preferPrimary: preferPrimary ?? !settings.pos,
+    });
+    if (position) {
+      update({ pos: position });
+      void logLine("ui", `placed on grid: ${settings.anchor} slot ${settings.slot} -> ${position.x},${position.y}`);
+    }
+    return position;
+  };
+
   useEffect(() => {
     if (!inTauri || !ready || placed.current) return;
     placed.current = true;
     void (async () => {
       if (settings.pos && (await onScreen(settings.pos))) await moveWindowTo(settings.pos);
-      else {
-        const position = await placeTopRight(settings.width);
-        if (position) update({ pos: position });
-      }
+      else await placeNow();
     })();
     let timer: number | null = null;
     void watchMoves((position) => {
@@ -161,11 +177,49 @@ export default function App() {
         // Mission Control moves the window around as well; junk positions would
         // put the widget off-screen on the next start.
         void onScreen(position).then((ok) => {
-          if (ok) update({ pos: position });
+          if (!ok) return;
+          if (!settings.snap) {
+            update({ pos: position });
+            return;
+          }
+          const snapped = { x: snapToGrid(position.x), y: snapToGrid(position.y) };
+          update({ pos: snapped });
+          if (snapped.x !== position.x || snapped.y !== position.y) void moveWindowTo(snapped);
         });
       }, 700);
     });
-  }, [ready, settings.pos, settings.width, update]);
+  }, [ready, settings.pos, settings.width, settings.snap, settings.anchor, settings.slot, update]);
+
+  // The tray menu can put the widget back where it belongs when it is buried
+  // under the system widgets and cannot be grabbed.
+  useEffect(() => {
+    if (!inTauri) return;
+    let unlisten: (() => void) | null = null;
+    void import("@tauri-apps/api/event").then(({ listen }) =>
+      listen("widget://place", () => {
+        // From the tray menu this means: bring it back where I can see it.
+        void placeNow(true);
+      }).then((fn) => {
+        unlisten = fn;
+      }),
+    );
+    return () => unlisten?.();
+  });
+
+  // Moving to another slot or corner is an instruction, not a preference to be
+  // applied on the next start.
+  const lastSlot = useRef<string | null>(null);
+  useEffect(() => {
+    if (!inTauri || !ready || !placed.current) return;
+    const key = `${settings.anchor}:${settings.slot}:${settings.width}`;
+    if (lastSlot.current === null) {
+      lastSlot.current = key;
+      return;
+    }
+    if (lastSlot.current === key) return;
+    lastSlot.current = key;
+    void placeNow();
+  }, [ready, settings.anchor, settings.slot, settings.width]);
 
   /* ------------------------------------------------- window: desktop widget */
   useEffect(() => {
@@ -219,8 +273,7 @@ export default function App() {
   }, [ready]);
 
   const reposition = async () => {
-    const position = await placeTopRight(settings.width);
-    if (position) update({ pos: position });
+    await placeNow();
   };
 
 

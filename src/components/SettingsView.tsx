@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Meta, Snapshot } from "../types";
-import { TempUnit, WIDTHS, inTauri, normalizeOrder, type LanguagePref, type Presentation, type Settings, type WidgetId } from "../lib/settings";
+import { Anchor, TempUnit, WIDTHS, inTauri, normalizeOrder, type LanguagePref, type Presentation, type Settings, type WidgetId } from "../lib/settings";
 import { bytes, pct } from "../lib/format";
 import { useT } from "../lib/i18n";
 import { useTemp } from "../lib/units";
@@ -127,9 +127,63 @@ export function SettingsView({
                   onChange={(value) => update({ width: Number(value) })}
                 />
               </Row>
+              <Row name={t("side")} hint={t("gridLead")}>
+                <Segmented
+                  value={settings.anchor.endsWith("right") ? "right" : "left"}
+                  options={[
+                    { value: "right", label: t("sideRight") },
+                    { value: "left", label: t("sideLeft") },
+                  ]}
+                  onChange={(value) =>
+                    update({ anchor: `${settings.anchor.split("-")[0]}-${value}` as Anchor })
+                  }
+                />
+              </Row>
+              <Row name={t("edge")}>
+                <Segmented
+                  value={settings.anchor.startsWith("top") ? "top" : "bottom"}
+                  options={[
+                    { value: "top", label: t("edgeTop") },
+                    { value: "bottom", label: t("edgeBottom") },
+                  ]}
+                  onChange={(value) =>
+                    update({ anchor: `${value}-${settings.anchor.split("-")[1]}` as Anchor })
+                  }
+                />
+              </Row>
+              <Row name={t("slot")} hint={t("slotHint")}>
+                <span className="crow-control">
+                  <span className="order-btns">
+                    <button
+                      className="obtn"
+                      title={t("moveUp")}
+                      disabled={settings.slot <= 0}
+                      onClick={() => update({ slot: Math.max(0, settings.slot - 1) })}
+                    >
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
+                        <path d="M2.5 7.5 6 4l3.5 3.5" />
+                      </svg>
+                    </button>
+                    <button
+                      className="obtn"
+                      title={t("moveDown")}
+                      disabled={settings.slot >= 7}
+                      onClick={() => update({ slot: Math.min(7, settings.slot + 1) })}
+                    >
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
+                        <path d="M2.5 4.5 6 8l3.5-3.5" />
+                      </svg>
+                    </button>
+                  </span>
+                  <b>{settings.slot + 1}</b>
+                </span>
+              </Row>
+              <Row name={t("snap")} hint={t("snapHint")}>
+                <Switch on={settings.snap} onChange={(on) => update({ snap: on })} />
+              </Row>
               <Row name={t("position")} hint={t("positionHint")}>
                 <button className="btn" onClick={onReposition}>
-                  {t("reposition")}
+                  {t("placeNow")}
                 </button>
               </Row>
             </Group>

@@ -1,5 +1,6 @@
 import { inTauri, logLine } from "./telemetry";
-import type { Presentation } from "./settings";
+import type { Monitor } from "@tauri-apps/api/window";
+import type { Anchor, Presentation } from "./settings";
 
 /**
  * Window plumbing for a widget: it hugs its content (no scrollbars ever),
@@ -50,6 +51,91 @@ export async function resizeToContent(width: number): Promise<number> {
     void logLine("error", `resize failed: ${error}`);
   }
   return height;
+}
+
+/** Lattice the widget snaps to, in logical px — same idea as the system grid. */
+export const GRID = 8;
+/** Gap between two stacked slots, in logical px. */
+export const SLOT_GAP = 16;
+/** Distance from the screen edge, in logical px. */
+const EDGE_MARGIN = 20;
+
+export function snapToGrid(value: number): number {
+  return Math.round(value / GRID) * GRID;
+}
+
+/**
+ * Put the widget on its grid slot: against the chosen corner, `slot` rows down,
+ * one row being the widget's own height plus the gap. Works in physical px, the
+ * way window positions do, and clamps so the widget can never end up off screen.
+ */
+export async function placeOnGrid(options: {
+  anchor: Anchor;
+  slot: number;
+  width: number;
+  height: number;
+  /** Recovery: jump back to the display with the menu bar. */
+  preferPrimary?: boolean;
+}): Promise<{ x: number; y: number } | null> {
+  if (!inTauri) return null;
+  try {
+    const { availableMonitors, getCurrentWindow } = await import("@tauri-apps/api/window");
+    const { PhysicalPosition } = await import("@tauri-apps/api/dpi");
+    const win = await getCurrentWindow();
+    const monitors = await availableMonitors();
+    if (!monitors.length) return null;
+    // Stay on the display the widget is on now.
+    const here = await win.outerPosition().catch(() => null);
+    const { primaryMonitor, monitorFromPoint } = await import("@tauri-apps/api/window");
+    const primary = await primaryMonitor().catch(() => null);
+    const current = here
+      ? await monitorFromPoint(here.x + 8, here.y + 8).catch(() => null)
+      : null;
+    // Recovery placement goes to the display with the menu bar — when the
+    // widget is buried or parked on a screen that is switched off, that is the
+    // one the user is actually looking at.
+    const monitor = ((options.preferPrimary ? primary : current) ??
+      current ??
+      primary ??
+      monitors[0]) as Monitor;
+    const scale = monitor.scaleFactor;
+    const left = monitor.position.x;
+    const top = monitor.position.y;
+    const right = left + monitor.size.width;
+    const bottom = top + monitor.size.height;
+    const margin = Math.round(EDGE_MARGIN * scale);
+    const width = Math.round(options.width * scale);
+    const height = Math.round(options.height * scale);
+    const pitch = height + Math.round(SLOT_GAP * scale);
+    const x = options.anchor.endsWith("right")
+      ? right - width - margin
+      : left + margin;
+    const rawY = options.anchor.startsWith("top")
+      ? top + margin + options.slot * pitch
+      : bottom - height - margin - options.slot * pitch;
+    // Clamp on both axes: whatever the monitor arrangement or the scale factor
+    // reports, the widget must stay fully visible.
+    const clamp = (value: number, low: number, high: number) =>
+      Math.min(Math.max(value, low), Math.max(low, high));
+    const boundX = [left + margin, Math.max(left + margin, right - width - margin)] as const;
+    const boundY = [top + margin, Math.max(top + margin, bottom - height - margin)] as const;
+    // Snapping happens inside the bounds, never across them.
+    const point = {
+      x: clamp(snapToGrid(x), boundX[0], boundX[1]),
+      y: clamp(snapToGrid(rawY), boundY[0], boundY[1]),
+    };
+    await win.setPosition(new PhysicalPosition(point.x, point.y));
+    void logLine(
+      "ui",
+      `grid: monitor ${monitor.name ?? "?"} ${monitor.position.x},${monitor.position.y} ` +
+        `${monitor.size.width}x${monitor.size.height}@${scale} -> ${point.x},${point.y} ` +
+        `(slot ${options.slot}, ${options.anchor}, ${options.width}x${Math.round(options.height)})`,
+    );
+    return point;
+  } catch (error) {
+    void logLine("error", `grid placement failed: ${error}`);
+    return null;
+  }
 }
 
 /** First run: park the widget in the top-right corner, under the menu bar. */
