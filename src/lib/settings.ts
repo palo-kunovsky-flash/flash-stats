@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { publishSettings, setRemoteTarget } from "./bus";
+import { resolveLanguage, type LanguagePref } from "./i18n";
 
-export type WidgetId = "cpu" | "gpu" | "memory" | "battery" | "network" | "disk";
-export type Presentation = "desktop" | "floating" | "normal";
+export type { LanguagePref };
+
+/** Widths the widget can be; the stored value is always snapped to one. */
+export const WIDTHS = [360, 400, 440, 480];
+
+export function snapWidth(value: number): number {
+  return WIDTHS.reduce((best, width) =>
+    Math.abs(width - value) < Math.abs(best - value) ? width : best,
+  );
+}
+
+export type WidgetId = "cpu" | "gpu" | "memory" | "battery" | "network" | "disk" | "temps";
+export type Presentation = "desktop" | "wallpaper" | "floating" | "normal";
 
 export type Settings = {
   intervalMs: number;
@@ -22,23 +35,32 @@ export type Settings = {
   pos: { x: number; y: number } | null;
   /** Global hotkey that hides / shows the widget. */
   shortcut: string;
+  /** Interface language; auto follows the system. */
+  language: LanguagePref;
+  /** Bumped when stored defaults change, see SCHEMA below. */
+  schema: number;
 };
+
+/** Stored settings carry a schema version so upgrades can move defaults. */
+export const SCHEMA = 2;
 
 export const DEFAULTS: Settings = {
   intervalMs: 1000,
   theme: "auto",
   opacity: 0.62,
   blur: 34,
-  presentation: "desktop",
-  width: 320,
+  presentation: "wallpaper",
+  width: 400,
   showCores: true,
   showSpark: true,
   showTop: true,
   trayNet: true,
   trayColored: true,
-  widgets: { cpu: true, gpu: true, memory: true, battery: true, network: true, disk: false },
+  widgets: { cpu: true, gpu: true, memory: true, battery: true, network: true, disk: false, temps: true },
   pos: null,
   shortcut: "Alt+Command+S",
+  language: "en",
+  schema: 2,
 };
 
 const FILE = "settings.json";
@@ -70,6 +92,14 @@ export function useSettings() {
           setSettings((prev) => ({
             ...prev,
             ...stored,
+            // v2: widgets used to float above the desktop icons; anchor them to
+            // the wallpaper once, and only once.
+            presentation:
+              (stored.schema ?? 1) < 2 ? "wallpaper" : (stored.presentation ?? DEFAULTS.presentation),
+            // v2 also standardised on English and a wider bar.
+            language: (stored.schema ?? 1) < 2 ? "en" : (stored.language ?? DEFAULTS.language),
+            width: (stored.schema ?? 1) < 2 ? 400 : snapWidth(stored.width ?? DEFAULTS.width),
+            schema: SCHEMA,
             widgets: { ...DEFAULTS.widgets, ...(stored.widgets ?? {}) },
           }));
         }
@@ -81,9 +111,25 @@ export function useSettings() {
     })();
   }, []);
 
+  // Another window (widget or settings) may change the same file.
+  useEffect(() => {
+    setRemoteTarget(setSettings);
+    let unlisten: (() => void) | null = null;
+    void import("./bus").then(({ listenSettings }) =>
+      listenSettings().then((fn) => {
+        unlisten = fn;
+      }),
+    );
+    return () => {
+      setRemoteTarget(null);
+      unlisten?.();
+    };
+  }, []);
+
   const update = useCallback((patch: Partial<Settings>) => {
     setSettings((prev) => {
       const next = { ...prev, ...patch };
+      publishSettings(next);
       if (!inTauri) return next;
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(() => {
@@ -117,5 +163,18 @@ export function useSettings() {
     );
   }, [settings.theme, settings.opacity, settings.blur]);
 
-  return { settings, update, ready };
+  const lang = resolveLanguage(
+    settings.language,
+    typeof navigator === "undefined" ? "en" : navigator.language,
+  );
+
+  // The tray menu is drawn by AppKit, so it needs to be told as well.
+  useEffect(() => {
+    if (!inTauri) return;
+    void import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("set_language", { code: lang }))
+      .catch(() => undefined);
+  }, [lang]);
+
+  return { settings, update, ready, lang };
 }

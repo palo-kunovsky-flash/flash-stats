@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import {
   BatteryWidget,
   CpuWidget,
@@ -6,20 +6,22 @@ import {
   GpuWidget,
   MemoryWidget,
   NetworkWidget,
+  TempsWidget,
 } from "./components/widgets";
-import { SettingsSheet } from "./components/SettingsSheet";
-import { DEFAULTS, useSettings } from "./lib/settings";
+import { DEFAULTS, WIDTHS, useSettings } from "./lib/settings";
 import { pushTrayMeter } from "./lib/trayMeter";
 import { inTauri, logLine, useTelemetry } from "./lib/telemetry";
 import {
   applyPresentation,
   measureHeight,
   moveWindowTo,
+  onScreen,
   placeTopRight,
   resizeToContent,
   watchMoves,
 } from "./lib/windowing";
 import { bytes } from "./lib/format";
+import { LangContext, translate } from "./lib/i18n";
 
 /* ------------------------------------------------------------------ hotkey */
 /* React StrictMode mounts twice in development and macOS refuses duplicate
@@ -89,10 +91,9 @@ async function releaseShortcut(): Promise<void> {
 }
 
 export default function App() {
-  const { settings, update, ready } = useSettings();
+  const { settings, update, ready, lang } = useSettings();
+  const t = (key: string) => translate(lang, key);
   const { snap, hist, meta } = useTelemetry(settings.intervalMs);
-  const [sheet, setSheet] = useState(false);
-  const [activeShortcut, setActiveShortcut] = useState<string | null>(null);
   const placed = useRef(false);
   const lastHeight = useRef(0);
 
@@ -146,23 +147,43 @@ export default function App() {
     if (!inTauri || !ready || placed.current) return;
     placed.current = true;
     void (async () => {
-      if (settings.pos) await moveWindowTo(settings.pos);
-      else await placeTopRight(settings.width);
+      if (settings.pos && (await onScreen(settings.pos))) await moveWindowTo(settings.pos);
+      else {
+        const position = await placeTopRight(settings.width);
+        if (position) update({ pos: position });
+      }
     })();
     let timer: number | null = null;
     void watchMoves((position) => {
       if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(() => update({ pos: position }), 600);
+      timer = window.setTimeout(() => {
+        // Mission Control moves the window around as well; junk positions would
+        // put the widget off-screen on the next start.
+        void onScreen(position).then((ok) => {
+          if (ok) update({ pos: position });
+        });
+      }, 700);
     });
   }, [ready, settings.pos, settings.width, update]);
 
   /* ------------------------------------------------- window: desktop widget */
   useEffect(() => {
     if (!ready) return;
-    // While the sheet is open the bar must float above ordinary windows,
-    // otherwise a desktop-level widget hides its own settings behind them.
-    void applyPresentation(sheet ? "floating" : settings.presentation);
-  }, [ready, settings.presentation, sheet]);
+    void applyPresentation(settings.presentation);
+  }, [ready, settings.presentation]);
+
+  // The bar stays invisible until the real settings are on screen, otherwise
+  // it flashes in the default style for a moment.
+  useEffect(() => {
+    if (!inTauri || !ready) return;
+    void import("@tauri-apps/api/core").then(({ invoke }) => invoke("show_widget"));
+  }, [ready]);
+
+  const reposition = async () => {
+    const position = await placeTopRight(settings.width);
+    if (position) update({ pos: position });
+  };
+
 
   /* ---------------------------------------------------- tray meter & sync */
   useEffect(() => {
@@ -189,7 +210,7 @@ export default function App() {
       const pushes: Array<Promise<() => void>> = [
         listen<number>("tray://interval", (event) => update({ intervalMs: event.payload })),
         listen<boolean>("tray://net", (event) => update({ trayNet: event.payload })),
-        listen("tray://settings", () => setSheet(true)),
+        listen("widget://reposition", () => void reposition()),
       ];
       const fns = (await Promise.all(pushes)).filter(Boolean);
       if (disposed) fns.forEach((fn) => fn());
@@ -205,17 +226,12 @@ export default function App() {
   useEffect(() => {
     if (!inTauri || !settings.shortcut) return;
     void (async () => {
-      const shortcut = await acquireShortcut(settings.shortcut, async () => {
+      await acquireShortcut(settings.shortcut, async () => {
+        const { invoke } = await import("@tauri-apps/api/core");
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        const win = getCurrentWindow();
-        const visible = await win.isVisible();
-        if (visible) await win.hide();
-        else {
-          await win.show();
-          await win.setFocus();
-        }
+        if (await getCurrentWindow().isVisible()) await invoke("hide_widget");
+        else await invoke("show_widget");
       });
-      if (shortcut) setActiveShortcut(shortcut);
     })().catch((error) => void logLine("error", `shortcut: ${error}`));
     return () => {
       void releaseShortcut();
@@ -225,7 +241,6 @@ export default function App() {
   /* ------------------------------------------------------------ shortcuts */
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSheet(false);
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w") {
         event.preventDefault();
         void hideWidget();
@@ -240,7 +255,22 @@ export default function App() {
     : "Flash Stats";
   const spark = settings.showSpark;
 
+  // One-line report of what the bar shows, readable from the terminal.
+  useEffect(() => {
+    if (!ready) return;
+    const cards = document.querySelectorAll(".card").length;
+    const label = document.querySelector(".chipname")?.textContent?.trim() ?? "";
+    const el = document.querySelector(".chipname") as HTMLElement | null;
+    const need = el?.scrollWidth ?? 0;
+    const have = el?.clientWidth ?? 0;
+    void logLine(
+      "ui",
+      `widget rendered: ${cards} cards, title «${label}» ${need}/${have}px${need > have + 1 ? " CLIPPED" : ""}`,
+    );
+  }, [ready, snap]);
+
   return (
+    <LangContext.Provider value={lang}>
     <div className="shell">
       <header className="bar" data-tauri-drag-region>
         <span className="wordmark" data-tauri-drag-region>
@@ -252,10 +282,10 @@ export default function App() {
         <span className="spacer" data-tauri-drag-region />
         <button
           className="iconbtn fade"
-          title="Veľkosť widgetu"
+          title={t("widgetSize")}
           onClick={() => {
-            const widths = [280, 320, 380, 440];
-            const next = widths[(widths.indexOf(settings.width) + 1) % widths.length] ?? DEFAULTS.width;
+            const index = WIDTHS.indexOf(settings.width);
+            const next = WIDTHS[(index + 1) % WIDTHS.length] ?? DEFAULTS.width;
             update({ width: next });
           }}
           aria-label="Zmeniť šírku"
@@ -264,15 +294,15 @@ export default function App() {
         </button>
         <button
           className="iconbtn fade"
-          title="Nastavenia"
-          onClick={() => setSheet((value) => !value)}
+          title={t("settings")}
+          onClick={() => void openSettings()}
           aria-label="Nastavenia"
         >
           <GearIcon />
         </button>
         <button
           className="iconbtn fade"
-          title="Skryť widget (⌘W)"
+          title={t("hideWidget")}
           onClick={() => void hideWidget()}
           aria-label="Skryť widget"
         >
@@ -300,6 +330,7 @@ export default function App() {
               spark={spark}
               hidden={!settings.widgets.gpu}
             />
+            <TempsWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.temps} />
             <NetworkWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.network} />
             <BatteryWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.battery} />
             <DiskWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.disk} />
@@ -308,24 +339,24 @@ export default function App() {
           <div className="card" style={{ height: 92 }} />
         )}
       </div>
-
-      {sheet ? (
-        <SettingsSheet
-          settings={settings}
-          update={update}
-          meta={meta}
-          shortcut={activeShortcut ?? settings.shortcut}
-          onClose={() => setSheet(false)}
-        />
-      ) : null}
     </div>
+    </LangContext.Provider>
   );
 }
 
+/* All visibility changes go through Rust: the sampler keeps the widget on the
+   desktop and must know whether the user hid it on purpose. */
 async function hideWidget() {
   if (!inTauri) return;
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  await getCurrentWindow().hide();
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("hide_widget");
+}
+
+function openSettings() {
+  if (!inTauri) return;
+  void import("@tauri-apps/api/core").then(({ invoke }) =>
+    invoke("open_settings").catch((error) => void logLine("error", `open_settings: ${error}`)),
+  );
 }
 
 function GearIcon() {
