@@ -71,7 +71,7 @@ export function SettingsView({
 
   return (
     <div className="settings">
-      <nav className="side">
+      <nav className="side" data-tauri-drag-region>
         <div className="brand" data-tauri-drag-region>
           <img src={iconUrl} alt="" width="38" height="38" />
           <div data-tauri-drag-region>
@@ -100,7 +100,7 @@ export function SettingsView({
         </span>
       </nav>
 
-      <main className="pane">
+      <main className="pane" data-tauri-drag-region>
         {pane === "widget" ? (
           <>
             <h2>{t("paneWidget")}</h2>
@@ -137,10 +137,11 @@ export function SettingsView({
               {ordered.map((card, index) => (
                 <div className="crow order-row" key={card.id}>
                   <span className="grip" aria-hidden="true" />
-                  <span className="crow-label">
+                  <div className="crow-label">
                     <span>{t(card.key)}</span>
-                    <em>{t(card.hintKey)}</em>
-                  </span>
+                    <small>{t(card.hintKey)}</small>
+                  </div>
+                  <div className="crow-control">
                   <span className="order-btns">
                     <button
                       className="obtn"
@@ -167,6 +168,7 @@ export function SettingsView({
                     on={settings.widgets[card.id]}
                     onChange={(on) => update({ widgets: { ...settings.widgets, [card.id]: on } })}
                   />
+                  </div>
                 </div>
               ))}
             </Group>

@@ -45,22 +45,69 @@ export default function SettingsWindow() {
   // Reported once so a headless run can tell a rendered panel from a blank one.
   useEffect(() => {
     if (!ready) return;
-    const rows = document.querySelectorAll(".crow").length;
-    const panes = document.querySelectorAll(".side-item").length;
-    const icon = document.querySelector<HTMLImageElement>(".brand img");
-    // A camelCase word on screen means a translation key leaked into the UI.
-    const leaked = [...document.querySelectorAll(".side-item span, .crow-label span, .pane h2")]
-      .map((el) => el.textContent?.trim() ?? "")
-      .filter((text) => /^[a-z]+[A-Z][a-zA-Z]*$/.test(text));
-    const side = getComputedStyle(document.querySelector(".side")!);
-    const active = document.querySelector(".side-item.on");
-    void logLine(
-      "ui",
-      `settings rendered: ${panes} panes, ${rows} rows, icon ${icon?.naturalWidth ?? 0}px, ` +
-        `lang ${lang}, sidebar ${side.flexDirection} ${side.width}, ` +
-        `active «${active?.textContent?.trim() ?? "-"}» ${getComputedStyle(active!).backgroundColor}` +
-        `${leaked.length ? `, LEAKED KEYS ${leaked.join(",")}` : ""}`,
-    );
+    // Geometry audit: walks every pane and measures what is really drawn.
+    // Past-edge means text is cut by the window; cut means shorter than its own
+    // content; overlaps mean two things printed on each other.
+    void (async () => {
+      const items = [...document.querySelectorAll<HTMLElement>(".side-item")];
+      const restore = (document.querySelector(".side-item.on") as HTMLElement | null)?.dataset.index;
+      items.forEach((el, i) => {
+        el.dataset.index = String(i);
+      });
+      for (const item of items) {
+        item.click();
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const root = document.querySelector<HTMLElement>(".pane") ?? document.body;
+        const short = (el: Element) => (el.textContent ?? "").trim().slice(0, 14);
+        const pick = (sel: string, bad: (el: HTMLElement) => boolean) =>
+          [...root.querySelectorAll<HTMLElement>(sel)].filter(bad).map((el) => `${el.className}:${short(el)}`);
+        const clipped = pick(".crow, .kv, p", (el) => el.scrollWidth > el.clientWidth + 2);
+        const cut = pick(".crow-label, .kv, p", (el) => el.scrollHeight > el.clientHeight + 2);
+        const past = pick(".crow, .kv", (el) => el.getBoundingClientRect().right > window.innerWidth + 1);
+        const overlaps: string[] = [];
+        for (const row of root.querySelectorAll<HTMLElement>(".crow")) {
+          const kids = [...row.children] as HTMLElement[];
+          for (let i = 0; i < kids.length; i++)
+            for (let j = i + 1; j < kids.length; j++) {
+              const a = kids[i].getBoundingClientRect();
+              const b = kids[j].getBoundingClientRect();
+              if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 2 &&
+                  Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 2)
+                overlaps.push(`${kids[i].className}~${kids[j].className}`);
+            }
+        }
+        const bad = [
+          clipped.length && `clipped ${clipped.length} [${clipped.slice(0, 2).join(" | ")}]`,
+          cut.length && `cut ${cut.length} [${cut.slice(0, 2).join(" | ")}]`,
+          past.length && `past-edge ${past.length} [${past.slice(0, 2).join(" | ")}]`,
+          overlaps.length && `overlaps ${overlaps.length} [${overlaps.slice(0, 2).join(" | ")}]`,
+        ].filter(Boolean);
+        await logLine(
+          "ui",
+          `pane «${item.textContent?.trim()}»: ${bad.length ? bad.join(", ") : "clean"}`,
+        );
+      }
+      if (restore !== undefined) {
+        document.querySelector<HTMLElement>(`.side-item[data-index="${restore}"]`)?.click();
+      }
+
+      const rows = document.querySelectorAll(".crow").length;
+      const icon = document.querySelector<HTMLImageElement>(".brand img");
+      // A camelCase word in a label means a translation key reached the screen.
+      const BRANDS = ["macOS", "iPadOS", "iOS", "watchOS", "CPU", "GPU", "RAM"];
+      const leaked = [...document.querySelectorAll(".side-item span, .crow-label > span")]
+        .map((el) => el.textContent?.trim() ?? "")
+        .filter((text) => /^[a-zA-Z]+[A-Z][a-zA-Z]*$/.test(text) && !BRANDS.includes(text));
+      const side = getComputedStyle(document.querySelector(".side")!);
+      const active = document.querySelector(".side-item.on");
+      await logLine(
+        "ui",
+        `settings rendered: ${items.length} panes, ${rows} rows, icon ${icon?.naturalWidth ?? 0}px, ` +
+          `lang ${lang}, sidebar ${side.flexDirection} ${side.width}, ` +
+          `active «${active?.textContent?.trim() ?? "-"}»` +
+          `${leaked.length ? `, LEAKED KEYS ${leaked.join(",")}` : ""}`,
+      );
+    })();
   }, [ready, lang, snapshot]);
 
   if (!ready) return <div className="settings loading" />;

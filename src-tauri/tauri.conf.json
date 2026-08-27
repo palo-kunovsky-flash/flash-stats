@@ -47,7 +47,7 @@
         "center": true,
         "resizable": true,
         "decorations": true,
-        "titleBarStyle": "Transparent",
+        "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "transparent": true,
         "shadow": true,

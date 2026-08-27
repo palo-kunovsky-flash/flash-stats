@@ -602,11 +602,6 @@ input[type="range"]::-webkit-slider-thumb {
    Live network and heat readouts live in the bar, so the machine name could
    move to the tooltip instead of being truncated. */
 
-
-
-
-
-
 /* ============================================================ settings window
    Same glass language as the widget: vibrancy behind the webview, hairlines and
    translucent raised surfaces on top. No opaque greys anywhere. */
@@ -625,21 +620,10 @@ html[data-view="settings"] {
 
 .settings {
   display: grid;
-  grid-template-columns: 190px 1fr;
+  grid-template-columns: 190px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
-
-
-
-
-
-
-
-
-
-
-
 
 .side {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015));
@@ -755,7 +739,11 @@ html[data-view="settings"][data-theme="light"] .side {
 }
 
 .pane {
+  /* min-width 0 so a long value wraps instead of pushing the column out of
+     the window, which is how text ended up cut off at the edge. */
+  min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 24px 26px 30px;
 }
 
@@ -814,6 +802,11 @@ html[data-view="settings"][data-theme="light"] .side {
 .crow-label small {
   color: var(--faint);
   font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.crow-control .order-btns {
+  margin-right: 2px;
 }
 
 .crow-control {
