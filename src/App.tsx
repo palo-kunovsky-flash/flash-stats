@@ -180,6 +180,44 @@ export default function App() {
     void import("@tauri-apps/api/core").then(({ invoke }) => invoke("show_widget"));
   }, [ready]);
 
+  const auditDone = useRef(false);
+
+  // Deep check of the expanded cards, opt-in with FLASH_STATS_AUDIT=1: a label
+  // reaching over its value, or a row taller than its box, is text printed on
+  // text — which is what the temperatures details used to do.
+  useEffect(() => {
+    if (!ready || auditDone.current) return;
+    auditDone.current = true;
+    void (async () => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      if (!(await invoke<boolean>("audit_enabled"))) return;
+      for (const card of [...document.querySelectorAll<HTMLElement>(".card")]) {
+        const head = card.querySelector(".head")?.textContent?.trim() ?? "";
+        card.click();
+        await new Promise((resolve) => setTimeout(resolve, 550));
+        const bad: string[] = [];
+        for (const label of card.querySelectorAll<HTMLElement>(".kv .k")) {
+          const value = label.parentElement?.querySelector<HTMLElement>(".v");
+          if (!value) continue;
+          const a = label.getBoundingClientRect();
+          const b = value.getBoundingClientRect();
+          if (a.right > b.left + 1)
+            bad.push(`«${label.textContent?.slice(0, 12)}» +${Math.round(a.right - b.left)}px`);
+        }
+        const cut = [...card.querySelectorAll<HTMLElement>(".kv .v, .meta span, .proc")]
+          .filter((el) => el.scrollHeight > el.clientHeight + 2).length;
+        await logLine(
+          "ui",
+          `card «${head}»: open ${Math.round(card.getBoundingClientRect().height)}px, ` +
+            `detail rows ${card.querySelectorAll(".kv .k").length}, ` +
+            `collisions ${bad.length ? `OVERLAP [${bad.slice(0, 2).join(" | ")}]` : "none"}, cut ${cut}`,
+        );
+        card.click();
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    })();
+  }, [ready]);
+
   const reposition = async () => {
     const position = await placeTopRight(settings.width);
     if (position) update({ pos: position });

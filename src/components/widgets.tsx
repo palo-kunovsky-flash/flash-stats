@@ -4,7 +4,7 @@ import { Sparkline } from "./Sparkline";
 import type { History, Meta, Snapshot } from "../types";
 import { bps, bytes, clamp, duration, ghz, pct } from "../lib/format";
 import { useT } from "../lib/i18n";
-import { useTemp } from "../lib/units";
+import { toUnit, useTemp, useTempUnit } from "../lib/units";
 
 export const COLORS = {
   cpu: "var(--cpu)",
@@ -633,12 +633,13 @@ export function TempsWidget({
   const sorted = [...snap.sensors].sort((a, b) => b.tempC - a.tempC);
   const hot = sorted[0];
   const peak = usePeak([...(hist?.temp ?? []), hot?.tempC ?? 0]);
+  const tempUnit = useTempUnit();
   return (
     <Widget
       label={t("temps")}
       accent={COLORS.hot}
-      value={hot ? Math.round(hot.tempC) : "\u2014"}
-      unit="\u00b0C"
+      value={hot ? toUnit(hot.tempC, tempUnit).toFixed(0) : "\u2014"}
+      unit={`\u00b0${tempUnit.toUpperCase()}`}
       showSpark={spark}
       hidden={hidden}
       spark={
@@ -662,11 +663,11 @@ export function TempsWidget({
         </>
       }
       details={
-        <>
+        <div className="kv">
           {sorted.slice(0, 7).map((sensor) => (
             <KV key={sensor.id} k={sensor.label} v={tu(sensor.tempC, 1)} />
           ))}
-        </>
+        </div>
       }
     />
   );

@@ -28,3 +28,8 @@ export function useHot() {
   return (c: number | null | undefined, celsiusLimit: number) =>
     c !== null && c !== undefined && c >= celsiusLimit;
 }
+
+/** The configured unit itself, for places that print number and unit apart. */
+export function useTempUnit(): TempUnit {
+  return useContext(UnitContext);
+}

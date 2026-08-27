@@ -444,12 +444,18 @@ body {
 }
 .kv {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  /* label | spacer | value — the label takes what is left and truncates, so a
+     long sensor name can no longer run under the value */
+  grid-template-columns: minmax(0, 1fr) auto auto;
   font-size: 10px;
   gap: 4px 8px;
   color: var(--muted);
 }
 .kv .k {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--muted);
 }
 .kv .v {
