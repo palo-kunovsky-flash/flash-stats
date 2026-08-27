@@ -96,7 +96,7 @@ const STRINGS: Record<string, [string, string]> = {
   edgeTop: ["Top", "Hore"],
   edgeBottom: ["Bottom", "Dole"],
   slot: ["Grid slot", "Slot mriežky"],
-  slotHint: ["rows down from the corner", "riadkov pod rohom"],
+  slotHint: ["one slot is the height of the widget", "jeden slot je výška widgetu"],
   snap: ["Snap to grid", "Zarovnať na mriežku"],
   snapHint: ["8 px lattice while dragging", "zarovnáva ťahanie na 8 px"],
   placeNow: ["Place on the grid", "Umiestniť na mriežku"],
@@ -104,7 +104,7 @@ const STRINGS: Record<string, [string, string]> = {
 
   tempUnit: ["Temperature unit", "Jednotka teploty"],
 
-  orderHint: ["click the arrows to reorder the cards", "šipkami zoradíš karty"],
+  orderHint: ["Arrows change the order of the cards.", "Šipkami zmeníš poradie kariet."],
   moveUp: ["Move up", "Posunúť hore"],
   moveDown: ["Move down", "Posunúť dole"],
 

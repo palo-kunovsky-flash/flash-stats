@@ -965,10 +965,14 @@ html[data-view="settings"][data-theme="light"] .side {
 }
 
 .group-hint {
-  margin: -4px 0 8px;
+  /* lives inside the bordered panel, so no negative margin: that clipped the
+     tops of the first line */
+  margin: 0;
+  padding: 9px 13px 8px;
   font-size: 11px;
   letter-spacing: -0.005em;
   color: var(--faint);
+  border-bottom: 1px solid var(--hairline);
 }
 
 .order-row {

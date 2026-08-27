@@ -541,6 +541,32 @@ pub fn debug_log(msg: &str) {
     }
 }
 
+/// Height of the menu bar in points, so the grid can start under it instead of
+/// behind it. NSStatusBar thickness is the value AppKit itself uses.
+#[tauri::command]
+fn menu_bar_height() -> f64 {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+
+        let bar: *mut AnyObject = msg_send![objc2::class!(NSStatusBar), systemStatusBar];
+        if bar.is_null() {
+            return 24.0;
+        }
+        let thickness: f64 = msg_send![bar, thickness];
+        if thickness.is_finite() && thickness > 0.0 {
+            thickness
+        } else {
+            24.0
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        24.0
+    }
+}
+
 /// The pane walk in the settings window clicks through every panel, so it only
 /// runs when someone asks for it with FLASH_STATS_AUDIT=1.
 #[tauri::command]
@@ -569,6 +595,7 @@ pub fn run() {
             open_settings,
             log_line,
             audit_enabled,
+            menu_bar_height,
             quit_app,
             open_activity_monitor
         ])

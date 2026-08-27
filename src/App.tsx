@@ -149,12 +149,17 @@ export default function App() {
   // recovery action when it ends up behind the system widgets.
   const placeNow = async (preferPrimary?: boolean) => {
     const height = await resizeToContent(settings.width);
+    if (menuBar.current === null && inTauri) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      menuBar.current = await invoke<number>("menu_bar_height").catch(() => 24);
+    }
     const position = await placeOnGrid({
       anchor: settings.anchor,
       slot: settings.slot,
       width: settings.width,
       height: height || measureHeight(),
       preferPrimary: preferPrimary ?? !settings.pos,
+      topInset: menuBar.current ?? 0,
     });
     if (position) {
       update({ pos: position });
@@ -211,7 +216,7 @@ export default function App() {
   const lastSlot = useRef<string | null>(null);
   useEffect(() => {
     if (!inTauri || !ready || !placed.current) return;
-    const key = `${settings.anchor}:${settings.slot}:${settings.width}`;
+    const key = `${settings.anchor}:${settings.slot}`;
     if (lastSlot.current === null) {
       lastSlot.current = key;
       return;
@@ -219,7 +224,7 @@ export default function App() {
     if (lastSlot.current === key) return;
     lastSlot.current = key;
     void placeNow();
-  }, [ready, settings.anchor, settings.slot, settings.width]);
+  }, [ready, settings.anchor, settings.slot]);
 
   /* ------------------------------------------------- window: desktop widget */
   useEffect(() => {
@@ -235,6 +240,7 @@ export default function App() {
   }, [ready]);
 
   const auditDone = useRef(false);
+  const menuBar = useRef<number | null>(null);
 
   // Deep check of the expanded cards, opt-in with FLASH_STATS_AUDIT=1: a label
   // reaching over its value, or a row taller than its box, is text printed on

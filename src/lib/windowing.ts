@@ -76,6 +76,8 @@ export async function placeOnGrid(options: {
   height: number;
   /** Recovery: jump back to the display with the menu bar. */
   preferPrimary?: boolean;
+  /** Menu bar height in logical px, so a top slot starts under it. */
+  topInset?: number;
 }): Promise<{ x: number; y: number } | null> {
   if (!inTauri) return null;
   try {
@@ -86,11 +88,33 @@ export async function placeOnGrid(options: {
     if (!monitors.length) return null;
     // Stay on the display the widget is on now.
     const here = await win.outerPosition().catch(() => null);
-    const { primaryMonitor, monitorFromPoint } = await import("@tauri-apps/api/window");
+    const { primaryMonitor } = await import("@tauri-apps/api/window");
     const primary = await primaryMonitor().catch(() => null);
-    const current = here
-      ? await monitorFromPoint(here.x + 8, here.y + 8).catch(() => null)
-      : null;
+    // The display the widget overlaps the most. Probing a single point was not
+    // enough: at the edge of two displays, or right after Mission Control moved
+    // the window, it answered with a different screen and the widget jumped.
+    const size = await win.outerSize().catch(() => null);
+    let current: Monitor | null = null;
+    if (here && size) {
+      let best = 0;
+      for (const candidate of monitors) {
+        const overlap =
+          Math.max(
+            0,
+            Math.min(here.x + size.width, candidate.position.x + candidate.size.width) -
+              Math.max(here.x, candidate.position.x),
+          ) *
+          Math.max(
+            0,
+            Math.min(here.y + size.height, candidate.position.y + candidate.size.height) -
+              Math.max(here.y, candidate.position.y),
+          );
+        if (overlap > best) {
+          best = overlap;
+          current = candidate;
+        }
+      }
+    }
     // Recovery placement goes to the display with the menu bar — when the
     // widget is buried or parked on a screen that is switched off, that is the
     // one the user is actually looking at.
@@ -110,8 +134,14 @@ export async function placeOnGrid(options: {
     const x = options.anchor.endsWith("right")
       ? right - width - margin
       : left + margin;
+    // The menu bar belongs to the topmost display; a top slot must start under
+    // it, otherwise the widget sits behind the bar and its top row is unreadable.
+    const menuBarScreen = monitors.every((m) => monitor.position.y <= m.position.y);
+    const topInset = options.anchor.startsWith("top") && menuBarScreen
+      ? Math.round((options.topInset ?? 0) * scale)
+      : 0;
     const rawY = options.anchor.startsWith("top")
-      ? top + margin + options.slot * pitch
+      ? top + topInset + margin + options.slot * pitch
       : bottom - height - margin - options.slot * pitch;
     // Clamp on both axes: whatever the monitor arrangement or the scale factor
     // reports, the widget must stay fully visible.
@@ -128,7 +158,8 @@ export async function placeOnGrid(options: {
     void logLine(
       "ui",
       `grid: monitor ${monitor.name ?? "?"} ${monitor.position.x},${monitor.position.y} ` +
-        `${monitor.size.width}x${monitor.size.height}@${scale} -> ${point.x},${point.y} ` +
+        `${monitor.size.width}x${monitor.size.height}@${scale} topInset ${topInset} -> ` +
+        `${point.x},${point.y} ` +
         `(slot ${options.slot}, ${options.anchor}, ${options.width}x${Math.round(options.height)})`,
     );
     return point;
