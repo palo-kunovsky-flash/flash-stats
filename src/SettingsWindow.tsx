@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useRef, useEffect, useState } from "react";
 import { SettingsView } from "./components/SettingsView";
 import { useSettings, inTauri } from "./lib/settings";
 import type { Snapshot, Meta } from "./types";
@@ -42,13 +42,43 @@ export default function SettingsWindow() {
     void import("@tauri-apps/api/event").then(({ emit }) => emit("widget://reposition", null));
   };
 
-  // Reported once so a headless run can tell a rendered panel from a blank one.
+  const auditDone = useRef(false);
+
+  /// One line about what is really on screen, so a headless run can tell a
+  /// rendered panel from a blank one.
+  const report = async (audited: boolean) => {
+    const rows = document.querySelectorAll(".crow").length;
+    const panes = document.querySelectorAll(".side-item").length;
+    const icon = document.querySelector<HTMLImageElement>(".brand img");
+    // A camelCase word in a label means a translation key reached the screen.
+    const brands = ["macOS", "iPadOS", "iOS", "watchOS", "CPU", "GPU", "RAM"];
+    const leaked = [...document.querySelectorAll(".side-item span, .crow-label > span")]
+      .map((el) => el.textContent?.trim() ?? "")
+      .filter((text) => /^[a-zA-Z]+[A-Z][a-zA-Z]*$/.test(text) && !brands.includes(text));
+    const side = getComputedStyle(document.querySelector(".side")!);
+    const active = document.querySelector(".side-item.on");
+    await logLine(
+      "ui",
+      `settings rendered${audited ? " (audited)" : ""}: ${panes} panes, ${rows} rows, ` +
+        `icon ${icon?.naturalWidth ?? 0}px, lang ${lang}, ` +
+        `sidebar ${side.flexDirection} ${side.width}, active «${active?.textContent?.trim() ?? "-"}»` +
+        `${leaked.length ? `, LEAKED KEYS ${leaked.join(",")}` : ""}`,
+    );
+  };
+
+  // Geometry audit: walks every pane and measures what is drawn. Past-edge means
+  // text is cut by the window, cut means shorter than its own content, overlaps
+  // mean two things printed on each other. It clicks through the panels, so it
+  // only runs when asked for with FLASH_STATS_AUDIT=1 and never twice.
   useEffect(() => {
-    if (!ready) return;
-    // Geometry audit: walks every pane and measures what is really drawn.
-    // Past-edge means text is cut by the window; cut means shorter than its own
-    // content; overlaps mean two things printed on each other.
+    if (!ready || auditDone.current) return;
+    auditDone.current = true;
     void (async () => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      if (!(await invoke<boolean>("audit_enabled"))) {
+        await report(false);
+        return;
+      }
       const items = [...document.querySelectorAll<HTMLElement>(".side-item")];
       const restore = (document.querySelector(".side-item.on") as HTMLElement | null)?.dataset.index;
       items.forEach((el, i) => {
@@ -71,8 +101,10 @@ export default function SettingsWindow() {
             for (let j = i + 1; j < kids.length; j++) {
               const a = kids[i].getBoundingClientRect();
               const b = kids[j].getBoundingClientRect();
-              if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 2 &&
-                  Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 2)
+              if (
+                Math.min(a.right, b.right) - Math.max(a.left, b.left) > 2 &&
+                Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 2
+              )
                 overlaps.push(`${kids[i].className}~${kids[j].className}`);
             }
         }
@@ -90,25 +122,9 @@ export default function SettingsWindow() {
       if (restore !== undefined) {
         document.querySelector<HTMLElement>(`.side-item[data-index="${restore}"]`)?.click();
       }
-
-      const rows = document.querySelectorAll(".crow").length;
-      const icon = document.querySelector<HTMLImageElement>(".brand img");
-      // A camelCase word in a label means a translation key reached the screen.
-      const BRANDS = ["macOS", "iPadOS", "iOS", "watchOS", "CPU", "GPU", "RAM"];
-      const leaked = [...document.querySelectorAll(".side-item span, .crow-label > span")]
-        .map((el) => el.textContent?.trim() ?? "")
-        .filter((text) => /^[a-zA-Z]+[A-Z][a-zA-Z]*$/.test(text) && !BRANDS.includes(text));
-      const side = getComputedStyle(document.querySelector(".side")!);
-      const active = document.querySelector(".side-item.on");
-      await logLine(
-        "ui",
-        `settings rendered: ${items.length} panes, ${rows} rows, icon ${icon?.naturalWidth ?? 0}px, ` +
-          `lang ${lang}, sidebar ${side.flexDirection} ${side.width}, ` +
-          `active «${active?.textContent?.trim() ?? "-"}»` +
-          `${leaked.length ? `, LEAKED KEYS ${leaked.join(",")}` : ""}`,
-      );
+      await report(true);
     })();
-  }, [ready, lang, snapshot]);
+  }, [ready, lang]);
 
   if (!ready) return <div className="settings loading" />;
 

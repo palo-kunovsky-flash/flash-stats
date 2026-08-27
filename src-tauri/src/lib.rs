@@ -530,6 +530,13 @@ pub fn debug_log(msg: &str) {
     }
 }
 
+/// The pane walk in the settings window clicks through every panel, so it only
+/// runs when someone asks for it with FLASH_STATS_AUDIT=1.
+#[tauri::command]
+fn audit_enabled() -> bool {
+    std::env::var("FLASH_STATS_AUDIT").is_ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -550,6 +557,7 @@ pub fn run() {
             hide_widget,
             open_settings,
             log_line,
+            audit_enabled,
             quit_app,
             open_activity_monitor
         ])
