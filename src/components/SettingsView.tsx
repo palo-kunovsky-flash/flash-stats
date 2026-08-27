@@ -29,12 +29,14 @@ const INTERVALS = ["500", "1000", "2000", "5000"];
 
 type PaneId = "widget" | "look" | "tray" | "sampling" | "about";
 
-const PANES: { id: PaneId; key: string; icon: string }[] = [
-  { id: "widget", key: "paneWidget", icon: "M2.5 3h11v3.5h-11zM2.5 8.5h11V12h-11z" },
-  { id: "look", key: "paneLook", icon: "M8 2.2a5.8 5.8 0 100 11.6A5.8 5.8 0 008 2.2zM2.2 8h11.6" },
-  { id: "tray", key: "paneTray", icon: "M2 3.5h12v3H2zM4 9.5h2.5M9.5 9.5H12" },
-  { id: "sampling", key: "paneSampling", icon: "M2 8h2.6l1.8-4.2L9 12l1.7-4H14" },
-  { id: "about", key: "paneAbout", icon: "M8 7.2V12M8 4.4v.6M8 2.2a5.8 5.8 0 100 11.6A5.8 5.8 0 008 2.2z" },
+/* Dots in the same accent colours as the widget cards, so the sidebar reads as
+   part of the same app. */
+const PANES: { id: PaneId; key: string; icon: string; accent: string }[] = [
+  { id: "widget", key: "paneWidget", accent: "var(--cpu)", icon: "M2.5 3h11v3.5h-11zM2.5 8.5h11V12h-11z" },
+  { id: "look", key: "paneLook", accent: "var(--gpu)", icon: "M8 2.2a5.8 5.8 0 100 11.6A5.8 5.8 0 008 2.2zM2.2 8h11.6" },
+  { id: "tray", key: "paneTray", accent: "var(--down)", icon: "M2 3.5h12v3H2zM4 9.5h2.5M9.5 9.5H12" },
+  { id: "sampling", key: "paneSampling", accent: "var(--ram)", icon: "M2 8h2.6l1.8-4.2L9 12l1.7-4H14" },
+  { id: "about", key: "paneAbout", accent: "var(--up)", icon: "M8 7.2V12M8 4.4v.6M8 2.2a5.8 5.8 0 100 11.6A5.8 5.8 0 008 2.2z" },
 ];
 
 export function SettingsView({
@@ -70,18 +72,22 @@ export function SettingsView({
             <small data-tauri-drag-region>v{meta?.appVersion ?? "dev"}</small>
           </div>
         </div>
-        {PANES.map((item) => (
-          <button
-            key={item.id}
-            className={`side-item ${pane === item.id ? "on" : ""}`}
-            onClick={() => setPane(item.id)}
-          >
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
-              <path d={item.icon} />
-            </svg>
-            {t(item.key)}
-          </button>
-        ))}
+        <div className="side-nav">
+          {PANES.map((item) => (
+            <button
+              key={item.id}
+              className={`side-item ${pane === item.id ? "on" : ""}`}
+              style={{ ["--acc" as string]: item.accent } as React.CSSProperties}
+              onClick={() => setPane(item.id)}
+            >
+              <i className="dot" />
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35">
+                <path d={item.icon} />
+              </svg>
+              <span>{t(item.key)}</span>
+            </button>
+          ))}
+        </div>
         <span className="side-foot" data-tauri-drag-region>
           {t("sideFoot")}
         </span>
@@ -98,7 +104,6 @@ export function SettingsView({
                 <Segmented
                   value={settings.presentation}
                   options={[
-                    { value: "wallpaper", label: t("wallpaperMode") },
                     { value: "desktop", label: t("desktopMode") },
                     { value: "floating", label: t("floatingMode") },
                     { value: "normal", label: t("windowMode") },

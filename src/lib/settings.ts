@@ -42,7 +42,18 @@ export type Settings = {
 };
 
 /** Stored settings carry a schema version so upgrades can move defaults. */
-export const SCHEMA = 2;
+export const SCHEMA = 3;
+
+/**
+ * The desktop icon layer is the only level that behaves like a macOS widget:
+ * "show desktop" keeps it on screen and Mission Control moves it with the
+ * desktop. A stored "wallpaper" value is therefore always corrected — that
+ * level hides the widget on ⌘F3, which is never what people want here.
+ */
+function migratePresentation(stored: Partial<Settings>): Presentation {
+  const value = stored.presentation ?? DEFAULTS.presentation;
+  return value === "wallpaper" ? "desktop" : value;
+}
 
 export const DEFAULTS: Settings = {
   intervalMs: 1000,
@@ -60,7 +71,7 @@ export const DEFAULTS: Settings = {
   pos: null,
   shortcut: "Alt+Command+S",
   language: "en",
-  schema: 2,
+  schema: 3,
 };
 
 const FILE = "settings.json";
@@ -92,10 +103,7 @@ export function useSettings() {
           setSettings((prev) => ({
             ...prev,
             ...stored,
-            // v2: widgets used to float above the desktop icons; anchor them to
-            // the wallpaper once, and only once.
-            presentation:
-              (stored.schema ?? 1) < 2 ? "wallpaper" : (stored.presentation ?? DEFAULTS.presentation),
+            presentation: migratePresentation(stored),
             // v2 also standardised on English and a wider bar.
             language: (stored.schema ?? 1) < 2 ? "en" : (stored.language ?? DEFAULTS.language),
             width: (stored.schema ?? 1) < 2 ? 400 : snapWidth(stored.width ?? DEFAULTS.width),

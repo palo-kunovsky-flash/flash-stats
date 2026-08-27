@@ -48,9 +48,18 @@ export default function SettingsWindow() {
     const rows = document.querySelectorAll(".crow").length;
     const panes = document.querySelectorAll(".side-item").length;
     const icon = document.querySelector<HTMLImageElement>(".brand img");
+    // A camelCase word on screen means a translation key leaked into the UI.
+    const leaked = [...document.querySelectorAll(".side-item span, .crow-label span, .pane h2")]
+      .map((el) => el.textContent?.trim() ?? "")
+      .filter((text) => /^[a-z]+[A-Z][a-zA-Z]*$/.test(text));
+    const side = getComputedStyle(document.querySelector(".side")!);
+    const active = document.querySelector(".side-item.on");
     void logLine(
       "ui",
-      `settings rendered: ${panes} panes, ${rows} rows, icon ${icon?.naturalWidth ?? 0}px, lang ${lang}`,
+      `settings rendered: ${panes} panes, ${rows} rows, icon ${icon?.naturalWidth ?? 0}px, ` +
+        `lang ${lang}, sidebar ${side.flexDirection} ${side.width}, ` +
+        `active «${active?.textContent?.trim() ?? "-"}» ${getComputedStyle(active!).backgroundColor}` +
+        `${leaked.length ? `, LEAKED KEYS ${leaked.join(",")}` : ""}`,
     );
   }, [ready, lang, snapshot]);
 
