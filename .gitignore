@@ -51,3 +51,13 @@ env/
 *.db
 data/*.csv
 data/*.parquet
+
+# Rust / Cargo
+target/
+**/target/
+target
+*.rs.bk
+*.d
+
+# macOS widget scratch
+*.app/
