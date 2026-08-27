@@ -15,8 +15,8 @@
       {
         "label": "main",
         "title": "Flash Stats",
-        "width": 320,
-        "height": 460,
+        "width": 400,
+        "height": 420,
         "minWidth": 220,
         "minHeight": 140,
         "decorations": false,
@@ -29,9 +29,38 @@
         "dragDropEnabled": false,
         "acceptFirstMouse": true,
         "windowEffects": {
-          "effects": ["hudWindow"],
+          "effects": [
+            "hudWindow"
+          ],
           "state": "active",
           "radius": 18
+        }
+      },
+      {
+        "label": "settings",
+        "title": "Flash Stats Settings",
+        "url": "index.html?view=settings",
+        "width": 820,
+        "height": 580,
+        "minWidth": 660,
+        "minHeight": 460,
+        "center": true,
+        "resizable": true,
+        "decorations": true,
+        "titleBarStyle": "Transparent",
+        "hiddenTitle": true,
+        "transparent": true,
+        "shadow": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "acceptFirstMouse": true,
+        "dragDropEnabled": false,
+        "windowEffects": {
+          "effects": [
+            "sidebar"
+          ],
+          "state": "active",
+          "radius": 12
         }
       }
     ],
@@ -41,9 +70,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": [
+      "app"
+    ],
     "category": "Utility",
-    "icon": ["icons/icon.icns", "icons/icon.png"],
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
     "macOS": {
       "minimumSystemVersion": "12.0"
     }

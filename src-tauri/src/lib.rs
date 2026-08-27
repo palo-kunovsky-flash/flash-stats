@@ -1,4 +1,5 @@
 pub mod formatting;
+pub mod i18n;
 pub mod models;
 mod registry;
 pub mod sensors;
@@ -20,6 +21,7 @@ use crate::window::Presentation;
 
 const TRAY_ID: &str = "net-meter";
 const WINDOW: &str = "main";
+const SETTINGS: &str = "settings";
 
 pub struct Shared {
     sampler: Mutex<Sampler>,
@@ -29,6 +31,11 @@ pub struct Shared {
     tray_net: AtomicBool,
     /// Set once the frontend started drawing the menu-bar meter itself.
     tray_image: AtomicBool,
+    /// The widget may be hidden by the user only; anything else (Mission
+    /// Control, "show desktop", app hiding) gets undone by the sampler.
+    want_visible: AtomicBool,
+    /// Language of the tray menu, pushed by the frontend.
+    lang: Mutex<i18n::Lang>,
     /// Last strings pushed to the status item (avoid touching AppKit needlessly).
     tray_shown: Mutex<Option<(String, String)>>,
     tray: Mutex<Option<TrayIcon>>,
@@ -193,9 +200,9 @@ fn update_tray(shared: &Shared, handle: &AppHandle, snap: &Snapshot) {
         return;
     };
     if let Err(error) = handle.run_on_main_thread(move || {
-        if show_title {
-            let _ = tray.set_title(Some(&title));
-        }
+        // The title has to be cleared explicitly: leftover text would sit next
+        // to the canvas meter and the bar would show the rates twice.
+        let _ = tray.set_title(Some(if show_title { &title } else { "" }));
         let _ = tray.set_tooltip(Some(&tooltip));
     }) {
         debug_log(&format!("tray update skipped: {error}"));
@@ -209,17 +216,23 @@ fn restore_template_icon(tray: &TrayIcon) {
     }
 }
 
-fn build_menu(app: &AppHandle, interval_ms: u64, tray_net: bool) -> tauri::Result<Menu<tauri::Wry>> {
-    let toggle = MenuItem::with_id(app, "toggle", "Zobraziť / skryť widget", true, None::<&str>)?;
+fn build_menu(
+    app: &AppHandle,
+    interval_ms: u64,
+    tray_net: bool,
+    lang: i18n::Lang,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let toggle = MenuItem::with_id(app, "toggle", lang.toggle(), true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", lang.settings(), true, None::<&str>)?;
     let activity = MenuItem::with_id(
         app,
         "activity-monitor",
-        "Otvoriť Monitor aktivít",
+        lang.activity_monitor(),
         true,
         None::<&str>,
     )?;
     let sep1 = PredefinedMenuItem::separator(app)?;
-    let header = MenuItem::with_id(app, "interval-header", "Frekvencia", false, None::<&str>)?;
+    let header = MenuItem::with_id(app, "interval-header", lang.frequency(), false, None::<&str>)?;
     let i500 = CheckMenuItem::with_id(app, "interval-500", "0,5 s", true, interval_ms == 500, None::<&str>)?;
     let i1000 = CheckMenuItem::with_id(app, "interval-1000", "1 s", true, interval_ms == 1000, None::<&str>)?;
     let i2000 = CheckMenuItem::with_id(app, "interval-2000", "2 s", true, interval_ms == 2000, None::<&str>)?;
@@ -228,18 +241,19 @@ fn build_menu(app: &AppHandle, interval_ms: u64, tray_net: bool) -> tauri::Resul
     let net = CheckMenuItem::with_id(
         app,
         "tray-net",
-        "Meter siete v lište",
+        lang.network_meter(),
         true,
         tray_net,
         None::<&str>,
     )?;
     let sep3 = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Ukončiť Flash Stats", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", lang.quit(), true, None::<&str>)?;
 
     Menu::with_items(
         app,
         &[
             &toggle,
+            &settings,
             &activity,
             &sep1,
             &header,
@@ -258,29 +272,188 @@ fn build_menu(app: &AppHandle, interval_ms: u64, tray_net: bool) -> tauri::Resul
 fn refresh_tray_menu(state: &SharedRef) {
     let interval = state.interval_ms.load(Ordering::Relaxed);
     let tray_net = state.tray_net.load(Ordering::Relaxed);
-    if let  Ok(guard) = state.tray.lock() {
-        if let  Some(tray) = guard.as_ref() {
-            if let  Ok(menu) = build_menu(tray.app_handle(), interval, tray_net) {
+    let lang = *state.lang.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Ok(guard) = state.tray.lock() {
+        if let Some(tray) = guard.as_ref() {
+            if let Ok(menu) = build_menu(tray.app_handle(), interval, tray_net, lang) {
                 let _ = tray.set_menu(Some(menu));
             }
         }
     }
 }
 
+/// FLASH_STATS_SELFTEST=1 exercises the window plumbing without any clicking:
+/// the preferences window may only hide (never quit the app), and the widget
+/// must come back when the system sweeps it away.
+fn selftest(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut failures: Vec<String> = Vec::new();
+        let mut check = |name: &str, ok: bool| {
+            debug_log(&format!(
+                "selftest {} {}",
+                if ok { "ok  " } else { "FAIL" },
+                name
+            ));
+            if !ok {
+                failures.push(name.to_string());
+            }
+        };
+
+        std::thread::sleep(Duration::from_millis(4500));
+
+        if let Ok(monitors) = app.available_monitors() {
+            for monitor in monitors {
+                debug_log(&format!(
+                    "monitor {:?} pos={:?} size={:?} scale={:.2}",
+                    monitor.name(),
+                    monitor.position(),
+                    monitor.size(),
+                    monitor.scale_factor(),
+                ));
+            }
+        }
+        if let Some(widget) = app.get_webview_window(WINDOW) {
+            debug_log(&format!(
+                "widget frame pos={:?} size={:?}",
+                widget.outer_position().ok(),
+                widget.outer_size().ok(),
+            ));
+        }
+
+        let widget = app.get_webview_window(WINDOW);
+        check("widget window exists", widget.is_some());
+        if let Some(widget) = widget {
+            check("widget visible", widget.is_visible().unwrap_or(false));
+            // Stand in for Mission Control / "show desktop" hiding the window.
+            let _ = widget.hide();
+            check(
+                "watchdog put the widget back",
+                {
+                    std::thread::sleep(Duration::from_millis(2800));
+                    widget.is_visible().unwrap_or(false)
+                },
+            );
+        }
+
+        match open_settings(app.clone()) {
+            Ok(()) => {
+                std::thread::sleep(Duration::from_millis(600));
+                let settings = app.get_webview_window(SETTINGS);
+                check("settings window exists", settings.is_some());
+                if let Some(settings) = settings {
+                    check("settings visible", settings.is_visible().unwrap_or(false));
+                    let _ = settings.close();
+                    std::thread::sleep(Duration::from_millis(800));
+                    let after = app.get_webview_window(SETTINGS);
+                    check(
+                        "closing settings kept the window alive",
+                        after.is_some(),
+                    );
+                    check(
+                        "settings hidden after close",
+                        after.map(|window| !window.is_visible().unwrap_or(true)).unwrap_or(false),
+                    );
+                }
+            }
+            Err(error) => {
+                debug_log(&format!("selftest open_settings error: {error}"));
+                check("open_settings succeeded", false);
+            }
+        }
+
+        check("tray meter still registered", app.tray_by_id(TRAY_ID).is_some());
+        if failures.is_empty() {
+            debug_log("SELFTEST PASS");
+        } else {
+            debug_log(&format!("SELFTEST FAIL ({}): {:?}", failures.len(), failures));
+        }
+        app.exit(0);
+    });
+}
+
 fn toggle_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window(WINDOW) else {
         return;
     };
-    if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
-    } else {
+    let visible = window.is_visible().unwrap_or(false);
+    set_widget_visible(app, !visible);
+}
+
+/// The only place that decides whether the widget may be on screen.
+fn set_widget_visible(app: &AppHandle, visible: bool) {
+    if let Some(state) = app.try_state::<SharedRef>() {
+        state.want_visible.store(visible, std::sync::atomic::Ordering::Relaxed);
+    }
+    let Some(window) = app.get_webview_window(WINDOW) else {
+        return;
+    };
+    if visible {
         let _ = window.show();
-        let _ = window.set_focus();
+    } else {
+        let _ = window.hide();
     }
 }
 
+/// macOS sweeps windows away on ⌘F3 / "show desktop" and when an app is
+/// hidden. The widget is meant to stay, so it is put back every tick.
+fn keep_on_desktop(app: &AppHandle) {
+    let Some(state) = app.try_state::<SharedRef>() else {
+        return;
+    };
+    if !state.want_visible.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let Some(window) = app.get_webview_window(WINDOW) else {
+        return;
+    };
+    if window.is_visible().unwrap_or(true) {
+        return;
+    }
+    debug_log("widget disappeared, putting it back on the desktop");
+    let _ = window.show();
+}
+
+/// Frontend tells us which language the interface is in.
+#[tauri::command]
+fn set_language(app: tauri::AppHandle, state: tauri::State<'_, SharedRef>, code: String) -> Result<(), String> {
+    let lang = i18n::Lang::parse(&code);
+    {
+        let mut guard = state.lang.lock().map_err(|error| error.to_string())?;
+        *guard = lang;
+    }
+    debug_log(&format!("interface language -> {:?}", lang));
+    refresh_tray_menu(&state);
+    if let Some(window) = app.get_webview_window(SETTINGS) {
+        let _ = window.set_title(lang.settings_window_title());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn show_widget(app: tauri::AppHandle) {
+    set_widget_visible(&app, true);
+}
+
+#[tauri::command]
+fn hide_widget(app: tauri::AppHandle) {
+    set_widget_visible(&app, false);
+}
+
+/// Real settings window, like every other macOS app has. It is declared in
+/// tauri.conf.json (with native vibrancy) and only ever shown or hidden here.
+#[tauri::command]
+fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(SETTINGS) else {
+        return Err("settings window is missing".into());
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    window::raise(&app, SETTINGS);
+    Ok(())
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
-    let menu = build_menu(app, 1000, true)?;
+    let menu = build_menu(app, 1000, true, i18n::Lang::En)?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
@@ -293,12 +466,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
             match event.id.as_ref() {
                 "toggle" => toggle_window(app),
                 "settings" => {
-                    if let Some(window) = app.get_webview_window(WINDOW) {
-                        let _ = window.unminimize();
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                    if let Err(error) = open_settings(app.clone()) {
+                        debug_log(&format!("open settings failed: {error}"));
                     }
-                    let _ = app.emit("tray://settings", ());
                 }
                 "activity-monitor" => {
                     let _ = std::process::Command::new("open")
@@ -364,6 +534,10 @@ pub fn run() {
             set_tray_image,
             tray_image_mode,
             set_presentation,
+            set_language,
+            show_widget,
+            hide_widget,
+            open_settings,
             log_line,
             quit_app,
             open_activity_monitor
@@ -378,6 +552,8 @@ pub fn run() {
                 interval_ms: AtomicU64::new(1000),
                 tray_net: AtomicBool::new(true),
                 tray_image: AtomicBool::new(false),
+                want_visible: AtomicBool::new(false),
+                lang: Mutex::new(i18n::Lang::En),
                 tray_shown: Mutex::new(None),
                 tray: Mutex::new(Some(tray)),
             });
@@ -387,6 +563,13 @@ pub fn run() {
             if let  Some(webview) = app.get_webview_window(WINDOW) {
                 let _ = webview.set_always_on_top(false);
                 window::apply(&webview, Presentation::Desktop)?;
+                // FLASH_STATS_SETTINGS=1 opens the preference window straight
+                // away — handy while working on it.
+                if std::env::var("FLASH_STATS_SETTINGS").is_ok() {
+                    if let Err(error) = open_settings(handle.clone()) {
+                        debug_log(&format!("settings window failed: {error}"));
+                    }
+                }
             }
 
             std::thread::Builder::new()
@@ -416,6 +599,7 @@ pub fn run() {
                             *last = Some(snap.clone());
                         }
                         update_tray(&shared, &handle, &snap);
+                        keep_on_desktop(&handle);
                         debug_log(&format!(
                             "tick {:>4}ms  cpu {:>4.0}%  gpu {:>4}  ram {:>4.0}%  net {} / {}  \"{}\"  [{:>4}ms]",
                             snap.interval_ms,
@@ -449,8 +633,30 @@ pub fn run() {
                 })?;
 
             debug_log(&format!("Flash Stats v{} started", env!("CARGO_PKG_VERSION")));
+            if std::env::var("FLASH_STATS_SELFTEST").is_ok() {
+                selftest(app.handle().clone());
+            }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Flash Stats");
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Closing the preferences window only hides it — the widget and
+                // the menu bar meter keep running.
+                if window.label() == SETTINGS {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building Flash Stats")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                // A tray-only app must survive the last window being closed.
+                // app.exit(0) from the tray menu carries a code and still quits.
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
