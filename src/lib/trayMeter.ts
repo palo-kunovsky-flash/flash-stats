@@ -68,7 +68,7 @@ function drawArrow(
   ctx.fill();
 }
 
-function render(down: number, up: number, style: Style): { png: string; text: string; width: number } {
+export function renderMeter(down: number, up: number, style: Style): { png: string; text: string; width: number } {
   const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 2));
   const height = Math.round(HEIGHT_PT * dpr);
   if (!canvas) canvas = document.createElement("canvas");
@@ -136,7 +136,7 @@ export async function pushTrayMeter(down: number, up: number, style: Style) {
   if (!inTauri) return;
   let rendered: { png: string; text: string; width: number };
   try {
-    rendered = render(down, up, style);
+    rendered = renderMeter(down, up, style);
   } catch (error) {
     console.error("tray meter render failed", error);
     return;

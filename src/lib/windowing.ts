@@ -105,3 +105,32 @@ export async function applyPresentation(mode: Presentation) {
     void logLine("error", `presentation failed: ${error}`);
   }
 }
+
+/**
+ * A remembered position can be nonsense: a disconnected display, or a move
+ * event fired by the Mission Control animation. Only points that are really on
+ * a screen are trusted, otherwise the widget would be placed off-screen and
+ * look like it vanished.
+ */
+export async function onScreen(position: { x: number; y: number }): Promise<boolean> {
+  if (!inTauri) return true;
+  try {
+    const { availableMonitors } = await import("@tauri-apps/api/window");
+    const monitors = await availableMonitors();
+    return monitors.some((monitor) => {
+      const left = monitor.position.x;
+      const top = monitor.position.y;
+      const right = left + monitor.size.width;
+      const bottom = top + monitor.size.height;
+      return (
+        position.x > left - 40 &&
+        position.x < right - 80 &&
+        position.y > top - 20 &&
+        position.y < bottom - 40
+      );
+    });
+  } catch (error) {
+    void logLine("error", `position check failed: ${error}`);
+    return false;
+  }
+}

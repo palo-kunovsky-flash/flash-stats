@@ -7,6 +7,17 @@ needs no elevated privileges.
 Built with Tauri 2 (Rust backend) + React 19 (frontend). No sudo, no root
 helper, no launch daemon.
 
+## Self test
+
+No clicking needed — `FLASH_STATS_SELFTEST=1` drives the window plumbing from
+inside the app and prints PASS/FAIL before quitting: the preferences window may
+only hide when closed (the tray app must survive), the widget has to be put back
+after the system sweeps it away, and the menu bar item must stay registered.
+
+```bash
+FLASH_STATS_DEBUG=1 FLASH_STATS_SELFTEST=1 FLASH_STATS_SETTINGS=1 npm run tauri:dev
+```
+
 ## Run
 
 ```bash
@@ -34,6 +45,9 @@ FLASH_STATS_DEBUG=1    # verbose stderr: tick timings, sampler phases, UI logs
   window behaviour.
 - **Translucency** comes from `windowEffects: hudWindow` plus
   `macOSPrivateApi`, so the desktop shows through instead of a flat fill.
+- **Preferences window.** Settings live in their own window (`index.html?view=settings`)
+  with native sidebar vibrancy, an EN/SK interface and the same glass styling as
+  the widget. Closing it hides it; the app keeps running from the menu bar.
 - **Menu bar meter.** The network meter is drawn in the frontend canvas (SF
   Mono, fixed-width fields, vector arrows) and pushed to the `NSStatusItem` as
   a PNG. Settings toggle between template (adapts to light/dark menu bar) and

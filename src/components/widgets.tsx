@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { Sparkline } from "./Sparkline";
 import type { History, Meta, Snapshot } from "../types";
 import { bps, bytes, clamp, duration, ghz, pct, temp } from "../lib/format";
+import { useT } from "../lib/i18n";
 
 export const COLORS = {
   cpu: "var(--cpu)",
@@ -12,6 +13,7 @@ export const COLORS = {
   down: "var(--down)",
   up: "var(--up)",
   disk: "var(--disk)",
+  hot: "var(--batt-warn)",
 } as const;
 
 /* ------------------------------------------------------------------ shell */
@@ -41,6 +43,7 @@ export function Widget({
   hidden,
   showSpark = true,
 }: WidgetProps) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   if (hidden) return null;
   return (
@@ -48,7 +51,7 @@ export function Widget({
       className={`card ${open ? "open" : ""}`}
       style={{ ["--accent" as string]: accent } as React.CSSProperties}
       onClick={() => details && setOpen((v) => !v)}
-      title={details ? "Prejdi myšou pre detaily" : undefined}
+      title={details ? t("hoverDetails") : undefined}
     >
       <header className="head">
         <span className="label">
@@ -93,7 +96,8 @@ function KV({ k, v }: { k: string; v: ReactNode }) {
 }
 
 function SensorList({ snap }: { snap: Snapshot }) {
-  if (!snap.sensors.length) return <KV k="Senzory" v="žiadne" />;
+  const t = useT();
+  if (!snap.sensors.length) return <KV k={t("sensors")} v={t("none")} />;
   return (
     <div className="sensors">
       {snap.sensors.map((s) => (
@@ -126,6 +130,7 @@ export function CpuWidget({
   showTop: boolean;
   hidden: boolean;
 }) {
+  const t = useT();
   const { cpu } = snap;
   const kinds = cpu.coreKinds.length === cpu.cores.length ? cpu.coreKinds : [];
   const perf = kinds.filter((k) => k === "performance").length;
@@ -136,7 +141,7 @@ export function CpuWidget({
     <Widget
       hidden={hidden}
       showSpark={spark}
-      label="CPU"
+      label={t("cpu")}
       accent={COLORS.cpu}
       value={pct(cpu.usage, cpu.usage < 10 ? 1 : 0)}
       unit="%"
@@ -168,21 +173,21 @@ export function CpuWidget({
         <>
           <span title="Priemerná frekvencia zatížených jadier">{ghz(cpu.freqMhz)}</span>
           <Sep />
-          <span title="Load average (1 min)">load {cpu.load1.toFixed(2)}</span>
+          <span title={t("load")}>load {cpu.load1.toFixed(2)}</span>
           <Sep />
-          <span className={hot ? "hot" : ""} title="Najteplejší senzor">
+          <span className={hot ? "hot" : ""} title={t("hottestSensor")}>
             {temp(cpu.tempC, cpu.tempC !== null && cpu.tempC < 100 ? 0 : 1)}
           </span>
         </>
       }
       details={
         <div className="kv">
-          <KV k="Load 1 / 5 / 15" v={`${cpu.load1.toFixed(2)} · ${cpu.load5.toFixed(2)} · ${cpu.load15.toFixed(2)}`} />
-          <KV k="Jadrá" v={meta ? `${meta.physicalCores}P+E / ${meta.logicalCores} log.` : cpu.cores.length} />
+          <KV k={t("load")} v={`${cpu.load1.toFixed(2)} · ${cpu.load5.toFixed(2)} · ${cpu.load15.toFixed(2)}`} />
+          <KV k={t("cores")} v={meta ? `${meta.physicalCores}P+E / ${meta.logicalCores} log.` : cpu.cores.length} />
           {perf > 0 ? <KV k="P / E" v={`${perf} / ${eff}`} /> : null}
-          <KV k="Frekvencia max" v={ghz(cpu.maxFreqMhz)} />
-          <KV k="Procesy" v={cpu.processes} />
-          <KV k="Uptime" v={duration(cpu.uptimeSecs)} />
+          <KV k={t("peakFreq")} v={ghz(cpu.maxFreqMhz)} />
+          <KV k={t("processes")} v={cpu.processes} />
+          <KV k={t("uptime")} v={duration(cpu.uptimeSecs)} />
           {spark ? (
             <>
               <div className="rule" />
@@ -232,12 +237,13 @@ export function GpuWidget({
   meta: Meta | null;
   hidden: boolean;
 }) {
+  const t = useT();
   const { gpu } = snap;
   return (
     <Widget
       hidden={hidden}
       showSpark={spark}
-      label="GPU"
+      label={t("gpu")}
       accent={COLORS.gpu}
       value={gpu.usage === null ? "—" : pct(gpu.usage, gpu.usage < 10 ? 1 : 0)}
       unit="%"
@@ -246,19 +252,19 @@ export function GpuWidget({
       }
       meta={
         <>
-          <span title="Pamäť alokovaná GPU">{gpu.allocatedBytes ? bytes(gpu.allocatedBytes) : "—"}</span>
+          <span title={t("gpuMemory")}>{gpu.allocatedBytes ? bytes(gpu.allocatedBytes) : "—"}</span>
           <Sep />
-          <span title="Renderer">R {pct(gpu.renderer ?? 0)}%</span>
+          <span title={t("renderer")}>R {pct(gpu.renderer ?? 0)}%</span>
           <Sep />
-          <span title="Tiler">T {pct(gpu.tiler ?? 0)}%</span>
+          <span title={t("tiler")}>T {pct(gpu.tiler ?? 0)}%</span>
         </>
       }
       details={
         <div className="kv">
-          <KV k="Model" v={meta?.gpuName ?? "—"} />
-          <KV k="Alokovaná" v={bytes(gpu.allocatedBytes ?? 0)} />
-          <KV k="Používaná" v={bytes(gpu.inUseBytes ?? 0)} />
-          <KV k="Teplota" v={temp(gpu.tempC, 1)} />
+          <KV k={t("model")} v={meta?.gpuName ?? "—"} />
+          <KV k={t("allocated")} v={bytes(gpu.allocatedBytes ?? 0)} />
+          <KV k={t("memoryUsed")} v={bytes(gpu.inUseBytes ?? 0)} />
+          <KV k={t("temperature")} v={temp(gpu.tempC, 1)} />
         </div>
       }
     />
@@ -278,15 +284,16 @@ export function MemoryWidget({
   spark: boolean;
   hidden: boolean;
 }) {
+  const t = useT();
   const m = snap.memory;
   const usedPct = m.total ? (m.used / m.total) * 100 : 0;
   const pressureColor =
     m.pressure > 66 ? "var(--batt-crit)" : m.pressure > 33 ? "var(--batt-warn)" : "var(--batt)";
   const parts = [
-    { name: "App", value: m.app, color: "var(--ram)" },
-    { name: "Wired", value: m.wired, color: "#0f8ecb" },
-    { name: "Compressed", value: m.compressed, color: "#ff9f0a" },
-    { name: "Cached", value: m.cached, color: "#7f8c9b" },
+    { name: t("app"), value: m.app, color: "var(--ram)" },
+    { name: t("wired"), value: m.wired, color: "#0f8ecb" },
+    { name: t("compressed"), value: m.compressed, color: "#ff9f0a" },
+    { name: t("cached"), value: m.cached, color: "#7f8c9b" },
   ];
   const shownTotal = Math.max(m.total, m.used + m.cached);
 
@@ -294,7 +301,7 @@ export function MemoryWidget({
     <Widget
       hidden={hidden}
       showSpark={spark}
-      label="RAM"
+      label={t("memory")}
       accent={COLORS.ram}
       value={bytes(m.used, 1).replace(/ (GB|MB|TB|PB)/, "")}
       unit={bytes(m.used, 1).split(" ")[1] ?? ""}
@@ -302,7 +309,7 @@ export function MemoryWidget({
         <Sparkline data={hist.memory} color={COLORS.ram} max={100} height={22} className="spark-wrap" />
       }
       extra={
-        <div className="split" title="App / Wired / Compressed / Cached">
+        <div className="split" title={[t("app"), t("wired"), t("compressed"), t("cached")].join(" / ")}>
           {parts.map((p) => (
             <span
               key={p.name}
@@ -315,13 +322,13 @@ export function MemoryWidget({
         <>
           <span>z {bytes(m.total, 0)}</span>
           <Sep />
-          <span title="Aktivita pamäte">
+          <span title={t("memoryActivity")}>
             <Dot color={pressureColor} /> {usedPct.toFixed(0)}%
           </span>
           {m.swapUsed > 0 ? (
             <>
               <Sep />
-              <span title="Swap">swap {bytes(m.swapUsed, 0)}</span>
+              <span title={t("swap")}>swap {bytes(m.swapUsed, 0)}</span>
             </>
           ) : null}
         </>
@@ -331,10 +338,10 @@ export function MemoryWidget({
           {parts.map((p) => (
             <KV key={p.name} k={p.name} v={bytes(p.value, 1)} />
           ))}
-          <KV k="Komprimovaná (po rozbalení)" v={bytes(m.uncompressed, 1)} />
-          <KV k="Voľné" v={bytes(m.available, 1)} />
-          <KV k="Pressure" v={`${m.pressure.toFixed(0)} %`} />
-          <KV k="Swap" v={`${bytes(m.swapUsed, 1)} / ${bytes(m.swapTotal, 0)}`} />
+          <KV k={t("uncompressed")} v={bytes(m.uncompressed, 1)} />
+          <KV k={t("free")} v={bytes(m.available, 1)} />
+          <KV k={t("pressure")} v={`${m.pressure.toFixed(0)} %`} />
+          <KV k={t("swap")} v={`${bytes(m.swapUsed, 1)} / ${bytes(m.swapTotal, 0)}`} />
         </div>
       }
     />
@@ -375,6 +382,7 @@ export function BatteryWidget({
   spark: boolean;
   hidden: boolean;
 }) {
+  const t = useT();
   const b = snap.battery;
   if (!b.present) return null;
   const color =
@@ -392,7 +400,7 @@ export function BatteryWidget({
     <Widget
       hidden={hidden}
       showSpark={spark}
-      label="Battery"
+      label={t("battery")}
       accent={color}
       value={b.level.toFixed(0)}
       unit="%"
@@ -421,30 +429,30 @@ export function BatteryWidget({
       }
       meta={
         <>
-          <span title={discharging ? "Vybije sa za" : "Nabije sa za"}>
+          <span title={discharging ? t("timeToEmpty") : t("timeToFull")}>
             {b.timeRemainingSecs ? duration(b.timeRemainingSecs) : b.acConnected ? "síť" : "—"}
           </span>
           <Sep />
-          <span title="Zdravie batérie">{b.health.toFixed(0)}% zdravie</span>
+          <span title={t("batteryHealth")}>{b.health.toFixed(0)} %</span>
           {b.cycles !== null ? (
             <>
               <Sep />
-              <span title="Cykly">{b.cycles}c</span>
+              <span title={t("cycles")}>{b.cycles}</span>
             </>
           ) : null}
-          <span className="right" title="Teplota batérie">
+          <span className="right" title={t("batteryTemp")}>
             {temp(b.tempC, 1)}
           </span>
         </>
       }
       details={
         <div className="kv">
-          <KV k="Napätie" v={`${(b.voltageMv / 1000).toFixed(2)} V`} />
-          <KV k="Prúd" v={`${(b.amperageMa / 1000).toFixed(2)} A`} />
-          <KV k="Výkon" v={`${b.watts.toFixed(2)} W`} />
-          <KV k="Kapacita" v={`${b.nowMah.toFixed(0)} / ${b.designMah.toFixed(0)} mAh`} />
-          <KV k="Stav" v={b.charging ? "nabíja sa" : b.acConnected ? "na sieti" : "na batérii"} />
-          <KV k="Teplota" v={temp(b.tempC, 1)} />
+          <KV k={t("voltage")} v={`${(b.voltageMv / 1000).toFixed(2)} V`} />
+          <KV k={t("current")} v={`${(b.amperageMa / 1000).toFixed(2)} A`} />
+          <KV k={t("power")} v={`${b.watts.toFixed(2)} W`} />
+          <KV k={t("capacity")} v={`${b.nowMah.toFixed(0)} / ${b.designMah.toFixed(0)} mAh`} />
+          <KV k={t("state")} v={b.charging ? t("charging") : b.acConnected ? t("pluggedIn") : t("discharging")} />
+          <KV k={t("temperature")} v={temp(b.tempC, 1)} />
         </div>
       }
     />
@@ -494,13 +502,14 @@ export function NetworkWidget({
   spark: boolean;
   hidden: boolean;
 }) {
+  const t = useT();
   const n = snap.net;
   const peak = usePeak([...hist.down, ...hist.up]);
   return (
     <Widget
       hidden={hidden}
       showSpark={spark}
-      label="Network"
+      label={t("network")}
       accent={COLORS.down}
       value={<span style={{ fontSize: 11 }}>{n.primary}</span>}
       spark={
@@ -517,13 +526,13 @@ export function NetworkWidget({
       }
       meta={
         <>
-          <span title="Celkom stiahnuté">{bytes(n.totalIn, 0)} ↓</span>
+          <span title={t("totalDown")}>{bytes(n.totalIn, 0)} ↓</span>
           <Sep />
-          <span title="Celkom odoslané">{bytes(n.totalOut, 0)} ↑</span>
+          <span title={t("totalUp")}>{bytes(n.totalOut, 0)} ↑</span>
           {n.ipv4 ? (
             <>
               <Sep />
-              <span className="right" title="IPv4 adresa">
+              <span className="right" title={t("address")}>
                 {n.ipv4}
               </span>
             </>
@@ -541,8 +550,8 @@ export function NetworkWidget({
           ))}
           <div className="rule" />
           <KV k="IPv4" v={n.ipv4 ?? "—"} />
-          <KV k="Celkom ↓" v={bytes(n.totalIn, 1)} />
-          <KV k="Celkom ↑" v={bytes(n.totalOut, 1)} />
+          <KV k={`${t("total")} ↓`} v={bytes(n.totalIn, 1)} />
+          <KV k={`${t("total")} ↑`} v={bytes(n.totalOut, 1)} />
         </div>
       }
     />
@@ -562,13 +571,14 @@ export function DiskWidget({
   spark: boolean;
   hidden: boolean;
 }) {
+  const t = useT();
   const d = snap.disk;
   const peak = usePeak([...hist.diskRead, ...hist.diskWrite]);
   return (
     <Widget
       hidden={hidden}
       showSpark={spark}
-      label="Disk"
+      label={t("disk")}
       accent={COLORS.disk}
       value={<span style={{ fontSize: 11 }}>{d.name}</span>}
       spark={
@@ -592,9 +602,65 @@ export function DiskWidget({
       }
       details={
         <div className="kv">
-          <KV k="Čítané" v={`${bps(d.readBps)} (od štartu ${bytes(d.totalRead, 1)})`} />
-          <KV k="Zápis" v={`${bps(d.writeBps)} (od štartu ${bytes(d.totalWrite, 1)})`} />
+          <KV k="Čítané" v={`${bps(d.readBps)} ({t("sinceBoot")} ${bytes(d.totalRead, 1)})`} />
+          <KV k={t("write")} v={`${bps(d.writeBps)} ({t("sinceBoot")} ${bytes(d.totalWrite, 1)})`} />
         </div>
+      }
+    />
+  );
+}
+
+/* ------------------------------------------------------------- temperatures */
+
+export function TempsWidget({
+  snap,
+  hist,
+  spark,
+  hidden,
+}: {
+  snap: Snapshot;
+  hist: History | null;
+  spark: boolean;
+  hidden?: boolean;
+}) {
+  const t = useT();
+  const sorted = [...snap.sensors].sort((a, b) => b.tempC - a.tempC);
+  const hot = sorted[0];
+  const peak = usePeak([...(hist?.temp ?? []), hot?.tempC ?? 0]);
+  return (
+    <Widget
+      label={t("temps")}
+      accent={COLORS.hot}
+      value={hot ? Math.round(hot.tempC) : "\u2014"}
+      unit="\u00b0C"
+      showSpark={spark}
+      hidden={hidden}
+      spark={
+        hist ? (
+          <Sparkline
+            data={[...(hist.temp ?? []), hot?.tempC ?? 0]}
+            color={COLORS.hot}
+            max={Math.max(70, peak)}
+            height={20}
+            className="spark-wrap"
+          />
+        ) : null
+      }
+      meta={
+        <>
+          <span className={hot && hot.tempC > 85 ? "hot" : ""}>
+            {hot ? hot.label : t("none")}
+          </span>
+          <Sep />
+          <span title={t("peak")}>{Math.round(peak)} \u00b0C</span>
+        </>
+      }
+      details={
+        <>
+          {sorted.slice(0, 7).map((sensor) => (
+            <KV key={sensor.id} k={sensor.label} v={temp(sensor.tempC, 1)} />
+          ))}
+        </>
       }
     />
   );
