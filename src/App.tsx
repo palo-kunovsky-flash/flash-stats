@@ -159,8 +159,10 @@ export default function App() {
   /* ------------------------------------------------- window: desktop widget */
   useEffect(() => {
     if (!ready) return;
-    void applyPresentation(settings.presentation);
-  }, [ready, settings.presentation]);
+    // While the sheet is open the bar must float above ordinary windows,
+    // otherwise a desktop-level widget hides its own settings behind them.
+    void applyPresentation(sheet ? "floating" : settings.presentation);
+  }, [ready, settings.presentation, sheet]);
 
   /* ---------------------------------------------------- tray meter & sync */
   useEffect(() => {
@@ -187,6 +189,7 @@ export default function App() {
       const pushes: Array<Promise<() => void>> = [
         listen<number>("tray://interval", (event) => update({ intervalMs: event.payload })),
         listen<boolean>("tray://net", (event) => update({ trayNet: event.payload })),
+        listen("tray://settings", () => setSheet(true)),
       ];
       const fns = (await Promise.all(pushes)).filter(Boolean);
       if (disposed) fns.forEach((fn) => fn());

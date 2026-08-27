@@ -292,6 +292,14 @@ fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
             };
             match event.id.as_ref() {
                 "toggle" => toggle_window(app),
+                "settings" => {
+                    if let Some(window) = app.get_webview_window(WINDOW) {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    let _ = app.emit("tray://settings", ());
+                }
                 "activity-monitor" => {
                     let _ = std::process::Command::new("open")
                         .arg("-a")
