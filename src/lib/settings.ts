@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { publishSettings, setRemoteTarget } from "./bus";
 import { resolveLanguage, type LanguagePref } from "./i18n";
+import type { TempUnit } from "./units";
 
 export type { LanguagePref };
+export type { TempUnit } from "./units";
 
 /** Widths the widget can be; the stored value is always snapped to one. */
 export const WIDTHS = [360, 400, 440, 480];
@@ -43,6 +45,8 @@ export type Settings = {
   trayNet: boolean;
   trayColored: boolean;
   widgets: Record<WidgetId, boolean>;
+  /** Temperature unit shown everywhere; sensors are stored in °C. */
+  tempUnit: TempUnit;
   /** Card order, top to bottom. */
   order: WidgetId[];
   /** Remembered window position (physical px). */
@@ -82,6 +86,7 @@ export const DEFAULTS: Settings = {
   trayNet: true,
   trayColored: true,
   order: CARD_IDS,
+  tempUnit: "c",
   widgets: { cpu: true, gpu: true, memory: true, battery: true, network: true, disk: false, temps: true },
   pos: null,
   shortcut: "Alt+Command+S",

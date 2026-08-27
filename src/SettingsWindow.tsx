@@ -3,6 +3,7 @@ import { SettingsView } from "./components/SettingsView";
 import { useSettings, inTauri } from "./lib/settings";
 import type { Snapshot, Meta } from "./types";
 import { LangContext } from "./lib/i18n";
+import { UnitContext } from "./lib/units";
 import { logLine } from "./lib/telemetry";
 
 /**
@@ -61,6 +62,7 @@ export default function SettingsWindow() {
       "ui",
       `settings rendered${audited ? " (audited)" : ""}: ${panes} panes, ${rows} rows, ` +
         `icon ${icon?.naturalWidth ?? 0}px, lang ${lang}, ` +
+        `unit °${settings.tempUnit.toUpperCase()}, ` +
         `sidebar ${side.flexDirection} ${side.width}, active «${active?.textContent?.trim() ?? "-"}»` +
         `${leaked.length ? `, LEAKED KEYS ${leaked.join(",")}` : ""}`,
     );
@@ -130,6 +132,7 @@ export default function SettingsWindow() {
 
   return (
     <LangContext.Provider value={lang}>
+    <UnitContext.Provider value={settings.tempUnit}>
       <div className="settings-shell">
         <SettingsView
           settings={settings}
@@ -140,6 +143,7 @@ export default function SettingsWindow() {
           onReposition={reposition}
         />
       </div>
+    </UnitContext.Provider>
     </LangContext.Provider>
   );
 }

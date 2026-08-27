@@ -88,6 +88,8 @@ const STRINGS: Record<string, [string, string]> = {
   acShort: ["AC", "sieť"],
   sideFoot: ["no root, no daemon", "bez rootu, bez démona"],
   // settings window
+  tempUnit: ["Temperature unit", "Jednotka teploty"],
+
   orderHint: ["click the arrows to reorder the cards", "šipkami zoradíš karty"],
   moveUp: ["Move up", "Posunúť hore"],
   moveDown: ["Move down", "Posunúť dole"],

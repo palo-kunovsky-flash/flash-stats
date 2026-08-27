@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Meta, Snapshot } from "../types";
-import { WIDTHS, inTauri, normalizeOrder, type LanguagePref, type Presentation, type Settings, type WidgetId } from "../lib/settings";
-import { bytes, pct, temp } from "../lib/format";
+import { TempUnit, WIDTHS, inTauri, normalizeOrder, type LanguagePref, type Presentation, type Settings, type WidgetId } from "../lib/settings";
+import { bytes, pct } from "../lib/format";
 import { useT } from "../lib/i18n";
+import { useTemp } from "../lib/units";
 import { Group, Row, Segmented, Slider, Switch, prettyKeys } from "./controls";
 import iconUrl from "../assets/app-icon.png";
 
@@ -48,6 +49,7 @@ export function SettingsView({
   onReposition: () => void;
 }) {
   const t = useT();
+  const tu = useTemp();
   const [pane, setPane] = useState<PaneId>("widget");
 
   const order = useMemo(() => normalizeOrder(settings.order), [settings.order]);
@@ -214,6 +216,16 @@ export function SettingsView({
                   onChange={(value) => update({ theme: value as Settings["theme"] })}
                 />
               </Row>
+              <Row name={t("tempUnit")}>
+                <Segmented
+                  value={settings.tempUnit}
+                  options={[
+                    { value: "c", label: "°C" },
+                    { value: "f", label: "°F" },
+                  ]}
+                  onChange={(value) => update({ tempUnit: value as TempUnit })}
+                />
+              </Row>
               <Row name={t("opacity")}>
                 <Slider
                   min={25}
@@ -319,7 +331,7 @@ export function SettingsView({
                         }}
                       />
                     </span>
-                    <span className="sensor-value">{temp(sensor.tempC, 1)}</span>
+                    <span className="sensor-value">{tu(sensor.tempC, 1)}</span>
                   </div>
                 ))
               )}

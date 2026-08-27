@@ -9,6 +9,17 @@ pub struct Temps {
     components: Components,
 }
 
+/// Some SMC proximity sensors on Apple Silicon report Fahrenheit. Above 105 the
+/// firmware means °F — the SoC throttles hard long before a real 105 °C — so
+/// those are converted and everything downstream works in °C.
+pub fn canonical_celsius(raw: f32) -> f32 {
+    if raw > 105.0 {
+        (raw - 32.0) * 5.0 / 9.0
+    } else {
+        raw
+    }
+}
+
 impl Temps {
     pub fn new() -> Self {
         Self {
@@ -28,7 +39,7 @@ impl Temps {
             .list()
             .iter()
             .filter_map(|c| {
-                let temp = c.temperature()?;
+                let temp = canonical_celsius(c.temperature()?);
                 if !temp.is_finite() || temp < -20.0 || temp > 130.0 {
                     return None;
                 }
@@ -127,5 +138,21 @@ pub fn average(sensors: &[Sensor], groups: &[SensorGroup]) -> Option<f32> {
         None
     } else {
         Some(sum / n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_celsius;
+
+    #[test]
+    fn fahrenheit_sensors_are_converted() {
+        // Real readings from an M4 machine: the SoC sensors sit in the 50s-60s
+        // while the proximity keys report 110-122, which is Fahrenheit.
+        assert_eq!(canonical_celsius(110.5).round(), 44.0);
+        assert_eq!(canonical_celsius(121.7).round(), 50.0);
+        // Genuine Celsius readings pass through untouched.
+        assert_eq!(canonical_celsius(57.2), 57.2);
+        assert_eq!(canonical_celsius(100.0), 100.0);
     }
 }

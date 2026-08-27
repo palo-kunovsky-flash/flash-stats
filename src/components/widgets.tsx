@@ -2,8 +2,9 @@ import type { ReactNode } from "react";
 import { useRef, useState } from "react";
 import { Sparkline } from "./Sparkline";
 import type { History, Meta, Snapshot } from "../types";
-import { bps, bytes, clamp, duration, ghz, pct, temp } from "../lib/format";
+import { bps, bytes, clamp, duration, ghz, pct } from "../lib/format";
 import { useT } from "../lib/i18n";
+import { useTemp } from "../lib/units";
 
 export const COLORS = {
   cpu: "var(--cpu)",
@@ -97,6 +98,7 @@ function KV({ k, v }: { k: string; v: ReactNode }) {
 
 function SensorList({ snap }: { snap: Snapshot }) {
   const t = useT();
+  const tu = useTemp();
   if (!snap.sensors.length) return <KV k={t("sensors")} v={t("none")} />;
   return (
     <div className="sensors">
@@ -104,7 +106,7 @@ function SensorList({ snap }: { snap: Snapshot }) {
         <div className="kv" key={s.id}>
           <span className="k">{s.label}</span>
           <span />
-          <span className={`v ${s.tempC > 85 ? "hot" : ""}`}>{temp(s.tempC, 1)}</span>
+          <span className={`v ${s.tempC > 85 ? "hot" : ""}`}>{tu(s.tempC, 1)}</span>
         </div>
       ))}
     </div>
@@ -131,6 +133,7 @@ export function CpuWidget({
   hidden?: boolean;
 }) {
   const t = useT();
+  const tu = useTemp();
   const { cpu } = snap;
   const kinds = cpu.coreKinds.length === cpu.cores.length ? cpu.coreKinds : [];
   const perf = kinds.filter((k) => k === "performance").length;
@@ -176,7 +179,7 @@ export function CpuWidget({
           <span title={t("load")}>load {cpu.load1.toFixed(2)}</span>
           <Sep />
           <span className={hot ? "hot" : ""} title={t("hottestSensor")}>
-            {temp(cpu.tempC, cpu.tempC !== null && cpu.tempC < 100 ? 0 : 1)}
+            {tu(cpu.tempC, cpu.tempC !== null && cpu.tempC < 100 ? 0 : 1)}
           </span>
         </>
       }
@@ -238,6 +241,7 @@ export function GpuWidget({
   hidden?: boolean;
 }) {
   const t = useT();
+  const tu = useTemp();
   const { gpu } = snap;
   return (
     <Widget
@@ -264,7 +268,7 @@ export function GpuWidget({
           <KV k={t("model")} v={meta?.gpuName ?? "—"} />
           <KV k={t("allocated")} v={bytes(gpu.allocatedBytes ?? 0)} />
           <KV k={t("memoryUsed")} v={bytes(gpu.inUseBytes ?? 0)} />
-          <KV k={t("temperature")} v={temp(gpu.tempC, 1)} />
+          <KV k={t("temperature")} v={tu(gpu.tempC, 1)} />
         </div>
       }
     />
@@ -383,6 +387,7 @@ export function BatteryWidget({
   hidden?: boolean;
 }) {
   const t = useT();
+  const tu = useTemp();
   const b = snap.battery;
   if (!b.present) return null;
   const color =
@@ -441,7 +446,7 @@ export function BatteryWidget({
             </>
           ) : null}
           <span className="right" title={t("batteryTemp")}>
-            {temp(b.tempC, 1)}
+            {tu(b.tempC, 1)}
           </span>
         </>
       }
@@ -452,7 +457,7 @@ export function BatteryWidget({
           <KV k={t("power")} v={`${b.watts.toFixed(2)} W`} />
           <KV k={t("capacity")} v={`${b.nowMah.toFixed(0)} / ${b.designMah.toFixed(0)} mAh`} />
           <KV k={t("state")} v={b.charging ? t("charging") : b.acConnected ? t("pluggedIn") : t("discharging")} />
-          <KV k={t("temperature")} v={temp(b.tempC, 1)} />
+          <KV k={t("temperature")} v={tu(b.tempC, 1)} />
         </div>
       }
     />
@@ -624,6 +629,7 @@ export function TempsWidget({
   hidden?: boolean;
 }) {
   const t = useT();
+  const tu = useTemp();
   const sorted = [...snap.sensors].sort((a, b) => b.tempC - a.tempC);
   const hot = sorted[0];
   const peak = usePeak([...(hist?.temp ?? []), hot?.tempC ?? 0]);
@@ -652,13 +658,13 @@ export function TempsWidget({
             {hot ? hot.label : t("none")}
           </span>
           <Sep />
-          <span title={t("peak")}>{Math.round(peak)} \u00b0C</span>
+          <span title={t("peak")}>{tu(peak, 0)}</span>
         </>
       }
       details={
         <>
           {sorted.slice(0, 7).map((sensor) => (
-            <KV key={sensor.id} k={sensor.label} v={temp(sensor.tempC, 1)} />
+            <KV key={sensor.id} k={sensor.label} v={tu(sensor.tempC, 1)} />
           ))}
         </>
       }

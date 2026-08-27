@@ -22,6 +22,7 @@ import {
 } from "./lib/windowing";
 import { bytes } from "./lib/format";
 import { LangContext, translate } from "./lib/i18n";
+import { UnitContext } from "./lib/units";
 
 /* ------------------------------------------------------------------ hotkey */
 /* React StrictMode mounts twice in development and macOS refuses duplicate
@@ -274,6 +275,7 @@ export default function App() {
 
   return (
     <LangContext.Provider value={lang}>
+    <UnitContext.Provider value={settings.tempUnit}>
     <div className="shell">
       <header className="bar" data-tauri-drag-region>
         <span className="wordmark" data-tauri-drag-region>
@@ -346,6 +348,7 @@ export default function App() {
         )}
       </div>
     </div>
+    </UnitContext.Provider>
     </LangContext.Provider>
   );
 }
