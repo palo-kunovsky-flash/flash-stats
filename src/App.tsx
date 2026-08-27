@@ -288,7 +288,7 @@ export default function App() {
             const next = WIDTHS[(index + 1) % WIDTHS.length] ?? DEFAULTS.width;
             update({ width: next });
           }}
-          aria-label="Zmeniť šírku"
+          aria-label={t("widgetSize")}
         >
           <ResizeIcon />
         </button>
@@ -304,7 +304,7 @@ export default function App() {
           className="iconbtn fade"
           title={t("hideWidget")}
           onClick={() => void hideWidget()}
-          aria-label="Skryť widget"
+          aria-label={t("hideWidget")}
         >
           <EyeIcon />
         </button>

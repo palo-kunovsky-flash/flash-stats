@@ -19,7 +19,7 @@ const view = new URLSearchParams(window.location.search).get("view");
 const isSettings = view === "settings";
 if (isSettings) {
   document.documentElement.dataset.view = "settings";
-  document.title = "Nastavenia — Flash Stats";
+  document.title = "Flash Stats";
 }
 const Root = isSettings ? SettingsWindow : App;
 

@@ -171,7 +171,7 @@ export function CpuWidget({
       }
       meta={
         <>
-          <span title="Priemerná frekvencia zatížených jadier">{ghz(cpu.freqMhz)}</span>
+          <span title={t("avgFreq")}>{ghz(cpu.freqMhz)}</span>
           <Sep />
           <span title={t("load")}>load {cpu.load1.toFixed(2)}</span>
           <Sep />
@@ -430,7 +430,7 @@ export function BatteryWidget({
       meta={
         <>
           <span title={discharging ? t("timeToEmpty") : t("timeToFull")}>
-            {b.timeRemainingSecs ? duration(b.timeRemainingSecs) : b.acConnected ? "síť" : "—"}
+            {b.timeRemainingSecs ? duration(b.timeRemainingSecs) : b.acConnected ? t("acShort") : "—"}
           </span>
           <Sep />
           <span title={t("batteryHealth")}>{b.health.toFixed(0)} %</span>
@@ -602,7 +602,7 @@ export function DiskWidget({
       }
       details={
         <div className="kv">
-          <KV k="Čítané" v={`${bps(d.readBps)} ({t("sinceBoot")} ${bytes(d.totalRead, 1)})`} />
+          <KV k={t("read")} v={`${bps(d.readBps)} ({t("sinceBoot")} ${bytes(d.totalRead, 1)})`} />
           <KV k={t("write")} v={`${bps(d.writeBps)} ({t("sinceBoot")} ${bytes(d.totalWrite, 1)})`} />
         </div>
       }

@@ -9,7 +9,7 @@ import {
   type WidgetId,
 } from "../lib/settings";
 import { bytes, pct, temp } from "../lib/format";
-import { useLang, useT } from "../lib/i18n";
+import { useT } from "../lib/i18n";
 import { Group, Row, Segmented, Slider, Switch, prettyKeys } from "./controls";
 import iconUrl from "../assets/app-icon.png";
 
@@ -53,7 +53,6 @@ export function SettingsView({
   onReposition: () => void;
 }) {
   const t = useT();
-  const lang = useLang();
   const [pane, setPane] = useState<PaneId>("widget");
 
   const sensors = useMemo(
@@ -84,7 +83,7 @@ export function SettingsView({
           </button>
         ))}
         <span className="side-foot" data-tauri-drag-region>
-          {lang === "sk" ? "Bez rootu, bez démona" : "No root, no daemon"}
+          {t("sideFoot")}
         </span>
       </nav>
 

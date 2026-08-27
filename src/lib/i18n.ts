@@ -84,6 +84,9 @@ const STRINGS: Record<string, [string, string]> = {
   sinceBoot: ["since boot", "od štartu"],
   none: ["none", "žiadne"],
   hottestOf: ["{name} right now", "práve teraz {name}"],
+  avgFreq: ["average clock of busy cores", "priemerná frekvencia zatížených jadier"],
+  acShort: ["AC", "sieť"],
+  sideFoot: ["no root, no daemon", "bez rootu, bez démona"],
   // settings window
   settingsTitle: ["Settings", "Nastavenia"],
   paneWidget: ["Widget", "Widget"],
