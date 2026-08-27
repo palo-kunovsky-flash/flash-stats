@@ -88,6 +88,10 @@ const STRINGS: Record<string, [string, string]> = {
   acShort: ["AC", "sieť"],
   sideFoot: ["no root, no daemon", "bez rootu, bez démona"],
   // settings window
+  orderHint: ["click the arrows to reorder the cards", "šipkami zoradíš karty"],
+  moveUp: ["Move up", "Posunúť hore"],
+  moveDown: ["Move down", "Posunúť dole"],
+
   auto: ["Auto", "Auto"],
   blur: ["Blur", "Rozostrenie"],
   cards: ["Cards", "Karty"],

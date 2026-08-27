@@ -1,13 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Meta, Snapshot } from "../types";
-import {
-  WIDTHS,
-  inTauri,
-  type LanguagePref,
-  type Presentation,
-  type Settings,
-  type WidgetId,
-} from "../lib/settings";
+import { WIDTHS, inTauri, normalizeOrder, type LanguagePref, type Presentation, type Settings, type WidgetId } from "../lib/settings";
 import { bytes, pct, temp } from "../lib/format";
 import { useT } from "../lib/i18n";
 import { Group, Row, Segmented, Slider, Switch, prettyKeys } from "./controls";
@@ -56,6 +49,20 @@ export function SettingsView({
 }) {
   const t = useT();
   const [pane, setPane] = useState<PaneId>("widget");
+
+  const order = useMemo(() => normalizeOrder(settings.order), [settings.order]);
+  const ordered = useMemo(
+    () => order.map((id) => CARDS.find((card) => card.id === id)).filter((card) => !!card),
+    [order],
+  );
+
+  const move = (index: number, delta: number) => {
+    const next = [...order];
+    const to = index + delta;
+    if (to < 0 || to >= next.length) return;
+    [next[index], next[to]] = [next[to], next[index]];
+    update({ order: next });
+  };
 
   const sensors = useMemo(
     () => [...(snapshot?.sensors ?? [])].sort((a, b) => b.tempC - a.tempC),
@@ -126,13 +133,41 @@ export function SettingsView({
             </Group>
 
             <Group title={t("cards")}>
-              {CARDS.map((card) => (
-                <Row key={card.id} name={t(card.key)} hint={t(card.hintKey)}>
+              <p className="group-hint">{t("orderHint")}</p>
+              {ordered.map((card, index) => (
+                <div className="crow order-row" key={card.id}>
+                  <span className="grip" aria-hidden="true" />
+                  <span className="crow-label">
+                    <span>{t(card.key)}</span>
+                    <em>{t(card.hintKey)}</em>
+                  </span>
+                  <span className="order-btns">
+                    <button
+                      className="obtn"
+                      title={t("moveUp")}
+                      disabled={index === 0}
+                      onClick={() => move(index, -1)}
+                    >
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
+                        <path d="M2.5 7.5 6 4l3.5 3.5" />
+                      </svg>
+                    </button>
+                    <button
+                      className="obtn"
+                      title={t("moveDown")}
+                      disabled={index === ordered.length - 1}
+                      onClick={() => move(index, 1)}
+                    >
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
+                        <path d="M2.5 4.5 6 8l3.5-3.5" />
+                      </svg>
+                    </button>
+                  </span>
                   <Switch
                     on={settings.widgets[card.id]}
                     onChange={(on) => update({ widgets: { ...settings.widgets, [card.id]: on } })}
                   />
-                </Row>
+                </div>
               ))}
             </Group>
 

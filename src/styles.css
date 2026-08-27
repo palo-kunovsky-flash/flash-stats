@@ -964,3 +964,55 @@ html[data-view="settings"][data-theme="light"] .side {
 .settings.loading {
   min-height: 100vh;
 }
+
+.group-hint {
+  margin: -4px 0 8px;
+  font-size: 11px;
+  letter-spacing: -0.005em;
+  color: var(--faint);
+}
+
+.order-row {
+  gap: 8px;
+}
+
+.grip {
+  width: 8px;
+  height: 20px;
+  flex: none;
+  opacity: 0.38;
+  background-image: radial-gradient(currentColor 1px, transparent 1.2px);
+  background-size: 4px 5px;
+  background-position: center;
+}
+
+.order-btns {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.obtn {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  transition: background 130ms ease, color 130ms ease;
+}
+
+.obtn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.obtn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.obtn:disabled {
+  opacity: 0.28;
+}

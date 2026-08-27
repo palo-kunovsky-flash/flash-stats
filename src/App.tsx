@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import {
   BatteryWidget,
   CpuWidget,
@@ -258,14 +258,17 @@ export default function App() {
   // One-line report of what the bar shows, readable from the terminal.
   useEffect(() => {
     if (!ready) return;
-    const cards = document.querySelectorAll(".card").length;
+    const shown = [...document.querySelectorAll(".card .label")].map((el) =>
+      el.textContent?.trim() ?? "",
+    );
     const label = document.querySelector(".chipname")?.textContent?.trim() ?? "";
     const el = document.querySelector(".chipname") as HTMLElement | null;
     const need = el?.scrollWidth ?? 0;
     const have = el?.clientWidth ?? 0;
     void logLine(
       "ui",
-      `widget rendered: ${cards} cards, title «${label}» ${need}/${have}px${need > have + 1 ? " CLIPPED" : ""}`,
+      `widget rendered: ${shown.length} cards [${shown.join(", ")}], ` +
+        `title «${label}» ${need}/${have}px${need > have + 1 ? " CLIPPED" : ""}`,
     );
   }, [ready, snap]);
 
@@ -313,27 +316,30 @@ export default function App() {
       <div className="stack">
         {snap && ready ? (
           <>
-            <CpuWidget
-              snap={snap}
-              hist={hist}
-              meta={meta}
-              spark={spark}
-              showCores={settings.showCores}
-              showTop={settings.showTop}
-              hidden={!settings.widgets.cpu}
-            />
-            <MemoryWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.memory} />
-            <GpuWidget
-              snap={snap}
-              hist={hist}
-              meta={meta}
-              spark={spark}
-              hidden={!settings.widgets.gpu}
-            />
-            <TempsWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.temps} />
-            <NetworkWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.network} />
-            <BatteryWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.battery} />
-            <DiskWidget snap={snap} hist={hist} spark={spark} hidden={!settings.widgets.disk} />
+            {settings.order
+              .filter((id) => settings.widgets[id])
+              .map((id) => (
+              <Fragment key={id}>
+                {id === "cpu" ? (
+                  <CpuWidget
+                    snap={snap}
+                    hist={hist}
+                    meta={meta}
+                    spark={spark}
+                    showCores={settings.showCores}
+                    showTop={settings.showTop}
+                  />
+                ) : null}
+                {id === "memory" ? <MemoryWidget snap={snap} hist={hist} spark={spark} /> : null}
+                {id === "gpu" ? (
+                  <GpuWidget snap={snap} hist={hist} meta={meta} spark={spark} />
+                ) : null}
+                {id === "temps" ? <TempsWidget snap={snap} hist={hist} spark={spark} /> : null}
+                {id === "network" ? <NetworkWidget snap={snap} hist={hist} spark={spark} /> : null}
+                {id === "battery" ? <BatteryWidget snap={snap} hist={hist} spark={spark} /> : null}
+                {id === "disk" ? <DiskWidget snap={snap} hist={hist} spark={spark} /> : null}
+              </Fragment>
+            ))}
           </>
         ) : (
           <div className="card" style={{ height: 92 }} />

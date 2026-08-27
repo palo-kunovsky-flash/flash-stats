@@ -555,7 +555,19 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            let tray = build_tray(&handle)?;
+            // Menu bar app: no Dock tile. The bar lives on the desktop and the settings
+// window comes from the tray menu, so a Dock icon is noise — and a regular
+// policy app also gets swept away by "show desktop".
+app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        let tray = build_tray(&handle)?;
+            #[cfg(target_os = "macos")]
+            unsafe {
+                use objc2::msg_send;
+                use objc2::runtime::AnyObject;
+                let ns_app: *mut AnyObject = msg_send![objc2::class!(NSApplication), sharedApplication];
+                let policy: isize = msg_send![ns_app, activationPolicy];
+                debug_log(&format!("activation policy -> {policy} (1 = accessory, no Dock tile)"));
+            }
             let shared: SharedRef = Arc::new(Shared {
                 sampler: Mutex::new(Sampler::new()),
                 rings: Mutex::new(Rings::default()),

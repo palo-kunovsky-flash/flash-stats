@@ -128,7 +128,7 @@ export function CpuWidget({
   meta: Meta | null;
   showCores: boolean;
   showTop: boolean;
-  hidden: boolean;
+  hidden?: boolean;
 }) {
   const t = useT();
   const { cpu } = snap;
@@ -235,7 +235,7 @@ export function GpuWidget({
   hist: History;
   spark: boolean;
   meta: Meta | null;
-  hidden: boolean;
+  hidden?: boolean;
 }) {
   const t = useT();
   const { gpu } = snap;
@@ -282,7 +282,7 @@ export function MemoryWidget({
   snap: Snapshot;
   hist: History;
   spark: boolean;
-  hidden: boolean;
+  hidden?: boolean;
 }) {
   const t = useT();
   const m = snap.memory;
@@ -380,7 +380,7 @@ export function BatteryWidget({
   snap: Snapshot;
   hist: History;
   spark: boolean;
-  hidden: boolean;
+  hidden?: boolean;
 }) {
   const t = useT();
   const b = snap.battery;
@@ -500,7 +500,7 @@ export function NetworkWidget({
   snap: Snapshot;
   hist: History;
   spark: boolean;
-  hidden: boolean;
+  hidden?: boolean;
 }) {
   const t = useT();
   const n = snap.net;
@@ -569,7 +569,7 @@ export function DiskWidget({
   snap: Snapshot;
   hist: History;
   spark: boolean;
-  hidden: boolean;
+  hidden?: boolean;
 }) {
   const t = useT();
   const d = snap.disk;

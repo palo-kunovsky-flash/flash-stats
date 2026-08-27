@@ -14,6 +14,18 @@ export function snapWidth(value: number): number {
 }
 
 export type WidgetId = "cpu" | "gpu" | "memory" | "battery" | "network" | "disk" | "temps";
+
+/** Default card order, top to bottom; people can rearrange them. */
+export const CARD_IDS: WidgetId[] = ["cpu", "memory", "gpu", "temps", "network", "battery", "disk"];
+
+/**
+ * Saved card order, cleaned up: unknown ids dropped, cards added by an update
+ * appended at the end, so an upgrade never silently loses a card.
+ */
+export function normalizeOrder(order?: WidgetId[]): WidgetId[] {
+  const known = (order ?? []).filter((id) => CARD_IDS.includes(id));
+  return [...known, ...CARD_IDS.filter((id) => !known.includes(id))];
+}
 export type Presentation = "desktop" | "wallpaper" | "floating" | "normal";
 
 export type Settings = {
@@ -31,6 +43,8 @@ export type Settings = {
   trayNet: boolean;
   trayColored: boolean;
   widgets: Record<WidgetId, boolean>;
+  /** Card order, top to bottom. */
+  order: WidgetId[];
   /** Remembered window position (physical px). */
   pos: { x: number; y: number } | null;
   /** Global hotkey that hides / shows the widget. */
@@ -67,6 +81,7 @@ export const DEFAULTS: Settings = {
   showTop: true,
   trayNet: true,
   trayColored: true,
+  order: CARD_IDS,
   widgets: { cpu: true, gpu: true, memory: true, battery: true, network: true, disk: false, temps: true },
   pos: null,
   shortcut: "Alt+Command+S",
@@ -109,6 +124,7 @@ export function useSettings() {
             width: (stored.schema ?? 1) < 2 ? 400 : snapWidth(stored.width ?? DEFAULTS.width),
             schema: SCHEMA,
             widgets: { ...DEFAULTS.widgets, ...(stored.widgets ?? {}) },
+            order: normalizeOrder(stored.order),
           }));
         }
       } catch (error) {
