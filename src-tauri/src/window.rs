@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 /// Window levels, expanded from the values in CGWindowLevel.h:
-/// kCGDesktopWindowLevel = INT32_MIN + 25, kCGDesktopIconWindowLevel = +20 more.
+/// kCGDesktopWindowLevel = INT32_MIN + 25, kCGDesktopIconLevel = +20 more.
+/// Sitting *exactly* on the icon level is what makes macOS treat the window as
+/// part of the desktop: "show desktop" (⌘F3) keeps it on screen and Mission
+/// Control moves it together with the wallpaper and the icons instead of
+/// leaving it behind as a stray floating rectangle.
 const DESKTOP_ICON_LEVEL: isize = -2_147_483_603;
 const WALLPAPER_LEVEL: isize = -2_147_483_623;
 const NORMAL_LEVEL: isize = 0;
@@ -19,7 +23,6 @@ const FLOATING_LEVEL: isize = 3;
 
 // NSWindowCollectionBehavior
 const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
-const STATIONARY: usize = 1 << 4;
 const IGNORES_CYCLE: usize = 1 << 6;
 const FULL_SCREEN_AUXILIARY: usize = 1 << 7;
 /// Also show the window on full-screen Spaces (macOS 15+).
@@ -75,15 +78,19 @@ fn apply_inner(window: &WebviewWindow, mode: Presentation) -> Result<(), String>
 
         let widget = ns_window as *mut AnyObject;
         let on_desktop = matches!(mode, Presentation::Desktop | Presentation::Wallpaper);
+        // Deliberately *no* NSWindowCollectionBehaviorStationary: stationary
+        // windows stay put in Mission Control, which is exactly the stray
+        // rectangle users complain about. Desktop windows should travel with
+        // the desktop.
         let behavior = if on_desktop {
-            CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY | JOIN_ALL_APPLICATIONS
+            CAN_JOIN_ALL_SPACES | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY | JOIN_ALL_APPLICATIONS
         } else if mode == Presentation::Floating {
             CAN_JOIN_ALL_SPACES | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY | JOIN_ALL_APPLICATIONS
         } else {
             FULL_SCREEN_DISJOINED
         };
         let level = match mode {
-            Presentation::Desktop => DESKTOP_ICON_LEVEL + 1,
+            Presentation::Desktop => DESKTOP_ICON_LEVEL,
             Presentation::Wallpaper => WALLPAPER_LEVEL + 1,
             Presentation::Floating => FLOATING_LEVEL,
             Presentation::Normal => NORMAL_LEVEL,
@@ -104,6 +111,34 @@ fn apply_inner(window: &WebviewWindow, mode: Presentation) -> Result<(), String>
         let _ = (ns_window, mode);
     }
     Ok(())
+}
+
+/// Re-asserts the window's place inside its level without making it key.
+///
+/// Desktop level windows share the layer with the Finder icon window, so the
+/// order inside that layer decides what is on top. macOS reshuffles it on
+/// "show desktop" and on Space changes; a quiet orderFront keeps the widget
+/// visible without stealing focus from the active app.
+pub fn reassert(window: &WebviewWindow) {
+    let target = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            use objc2::msg_send;
+            use objc2::runtime::AnyObject;
+
+            if let Ok(ns_window) = target.ns_window() {
+                if !ns_window.is_null() {
+                    let widget = ns_window as *mut AnyObject;
+                    let _: () = msg_send![widget, orderFront: std::ptr::null_mut::<AnyObject>()];
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = target;
+        }
+    });
 }
 
 /// Brings a window of this accessory app forward and gives it keyboard focus.

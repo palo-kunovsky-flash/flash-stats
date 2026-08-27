@@ -34,6 +34,9 @@ pub struct Shared {
     /// The widget may be hidden by the user only; anything else (Mission
     /// Control, "show desktop", app hiding) gets undone by the sampler.
     want_visible: AtomicBool,
+    /// True while the bar sits on the desktop layers; in plain window or
+    /// floating mode the system is allowed to sweep it away.
+    pinned: AtomicBool,
     /// Language of the tray menu, pushed by the frontend.
     lang: Mutex<i18n::Lang>,
     /// Last strings pushed to the status item (avoid touching AppKit needlessly).
@@ -128,17 +131,21 @@ fn tray_image_mode(state: State<'_, SharedRef>) -> bool {
 #[tauri::command]
 fn set_presentation(app: AppHandle, mode: String) -> Result<String, String> {
     let presentation = Presentation::parse(&mode);
-    let Some(webview) = app.get_webview_window(WINDOW) else {
-        return Err("no window".into());
-    };
-    let _ = webview.set_always_on_top(presentation == Presentation::Floating);
-    window::apply(&webview, presentation)?;
-    debug_log(&format!("presentation -> {mode}"));
-    Ok(mode)
+    if let Some(state) = app.try_state::<SharedRef>() {
+        state.pinned.store(
+            matches!(
+                presentation,
+                Presentation::Desktop | Presentation::Wallpaper
+            ),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    if let Some(window) = app.get_webview_window(WINDOW) {
+        window::apply(&window, presentation)?;
+    }
+    Ok(format!("{presentation:?}"))
 }
 
-/// Frontend hands its console output here so `FLASH_STATS_DEBUG=1` shows it
-/// in the same terminal as the Rust logs.
 #[tauri::command]
 fn log_line(level: String, msg: String) {
     debug_log(&format!("[{level}] {msg}"));
@@ -395,18 +402,22 @@ fn set_widget_visible(app: &AppHandle, visible: bool) {
 }
 
 /// macOS sweeps windows away on ⌘F3 / "show desktop" and when an app is
-/// hidden. The widget is meant to stay, so it is put back every tick.
+/// hidden. A desktop widget is meant to stay, so it is put back every tick.
 fn keep_on_desktop(app: &AppHandle) {
     let Some(state) = app.try_state::<SharedRef>() else {
         return;
     };
-    if !state.want_visible.load(std::sync::atomic::Ordering::Relaxed) {
+    let relaxed = std::sync::atomic::Ordering::Relaxed;
+    if !state.pinned.load(relaxed) || !state.want_visible.load(relaxed) {
         return;
     }
     let Some(window) = app.get_webview_window(WINDOW) else {
         return;
     };
     if window.is_visible().unwrap_or(true) {
+        // Visible is not enough: on show desktop the window can be sent to the
+        // back of the desktop layer, behind the wallpaper and the icons.
+        window::reassert(&window);
         return;
     }
     debug_log("widget disappeared, putting it back on the desktop");
@@ -553,6 +564,7 @@ pub fn run() {
                 tray_net: AtomicBool::new(true),
                 tray_image: AtomicBool::new(false),
                 want_visible: AtomicBool::new(false),
+                pinned: AtomicBool::new(true),
                 lang: Mutex::new(i18n::Lang::En),
                 tray_shown: Mutex::new(None),
                 tray: Mutex::new(Some(tray)),
