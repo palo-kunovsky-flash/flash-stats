@@ -2,7 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Menu bar app: no Dock tile. Also set at runtime in lib.rs so dev runs match. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Flash Stats shows the name of the Wi-Fi network you are on. macOS treats that name as location data, so it asks for this permission. No position is ever read or stored.</string>
+	<!-- Location Services identifies its clients by bundle identifier and
+	     refuses one that has none. Tauri embeds this file into the unbundled
+	     development binary as well, so naming it here is what lets the Wi-Fi
+	     name work outside a packaged build too. -->
+	<key>CFBundleIdentifier</key>
+	<string>com.kunovsky.flashstats</string>
 	<key>LSUIElement</key>
 	<true/>
 </dict>

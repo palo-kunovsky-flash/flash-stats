@@ -140,3 +140,52 @@ pub fn core_clusters() -> CoreClusters {
     let eff = sysctl_i64(c"hw.perflevel1.physicalcpu").unwrap_or(0).max(0) as u32;
     CoreClusters { perf, eff }
 }
+
+// ------------------------------------------------------------- CPU ticks
+
+extern "C" {
+    fn host_statistics(
+        host: host_t,
+        flavor: libc::c_int,
+        info: *mut u32,
+        count: *mut mach_msg_type_number_t,
+    ) -> kern_return_t;
+}
+
+const HOST_CPU_LOAD_INFO: libc::c_int = 3;
+
+/// Cumulative scheduler ticks since boot, the numbers behind Activity
+/// Monitor's user / system / idle split.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuTicks {
+    pub user: u64,
+    pub system: u64,
+    pub idle: u64,
+    pub nice: u64,
+}
+
+impl CpuTicks {
+    pub fn total(&self) -> u64 {
+        self.user + self.system + self.idle + self.nice
+    }
+}
+
+pub fn cpu_ticks() -> Option<CpuTicks> {
+    unsafe {
+        let host: mach_port_t = mach2::mach_init::mach_host_self();
+        // host_cpu_load_info_data_t is four natural_t counters (user, system,
+        // idle, nice) and nothing else.
+        let mut raw = [0u32; 4];
+        let mut count = raw.len() as mach_msg_type_number_t;
+        let kr = host_statistics(host, HOST_CPU_LOAD_INFO, raw.as_mut_ptr(), &mut count);
+        if kr != 0 {
+            return None;
+        }
+        Some(CpuTicks {
+            user: raw[0] as u64,
+            system: raw[1] as u64,
+            idle: raw[2] as u64,
+            nice: raw[3] as u64,
+        })
+    }
+}

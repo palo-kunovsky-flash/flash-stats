@@ -1,9 +1,25 @@
 <!doctype html>
-<html lang="sk">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Flash Stats</title>
+    <!-- The stylesheet is imported from the module graph, so in development it
+         only arrives once Vite has run the entry script. Without this the raw
+         markup — wordmark, chip name, buttons — flashes across the bar unstyled
+         for a frame. The root stays hidden until the app has painted once. -->
+    <style>
+      html,
+      body {
+        background: transparent;
+      }
+      #root {
+        visibility: hidden;
+      }
+      html.ready #root {
+        visibility: visible;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

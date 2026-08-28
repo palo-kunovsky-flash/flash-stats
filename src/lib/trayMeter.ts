@@ -9,17 +9,24 @@ import { inTauri } from "./telemetry";
  */
 
 const HEIGHT_PT = 18;
-const FONT_PT = 11;
-const ARROW_PT = 8.5;
+/* Two lanes stacked inside the 18 pt status item, the way the system meters do
+   it: half the width of a side-by-side readout and the eye finds "down" and
+   "up" by position instead of by reading an arrow. */
+const FONT_PT = 8.5;
+const ARROW_PT = 6;
 const GAP_ARROW = 1.5;
-const GAP_SIDES = 5;
-const GAP_MID = 6.5;
+const GAP_SIDES = 3.5;
+const LANE_CENTERS = [5.1, 13.2];
 const FIELD_CHARS = 4;
 
 const COLOR_DOWN = "#0a84ff";
 const COLOR_UP = "#ff9f0a";
 
-type Style = { colored: boolean };
+type Style = {
+  colored: boolean;
+  /** Menu bar appearance, so the plain text stays readable on both. */
+  dark?: boolean;
+};
 
 let canvas: HTMLCanvasElement | null = null;
 let lastSignature = "";
@@ -45,22 +52,22 @@ function drawArrow(
   dpr: number,
   color: string,
 ) {
-  const height = 9 * dpr;
-  const head = 4.2 * dpr;
-  const width = 5.8 * dpr;
-  const stem = 1.8 * dpr;
+  const height = 6.4 * dpr;
+  const head = 3.1 * dpr;
+  const width = 4.6 * dpr;
+  const stem = 1.4 * dpr;
   const top = cy - height / 2;
   ctx.fillStyle = color;
   if (up) {
     ctx.fillRect(cx - stem / 2, top + head * 0.4, stem, height - head * 0.6);
     ctx.beginPath();
-    ctx.moveTo(cx, top - height * 0.05);
+    ctx.moveTo(cx, top);
     ctx.lineTo(cx - width / 2, top + head);
     ctx.lineTo(cx + width / 2, top + head);
   } else {
     ctx.fillRect(cx - stem / 2, top, stem, height - head * 0.6);
     ctx.beginPath();
-    ctx.moveTo(cx, top + height + height * 0.05);
+    ctx.moveTo(cx, top + height);
     ctx.lineTo(cx - width / 2, top + height - head);
     ctx.lineTo(cx + width / 2, top + height - head);
   }
@@ -68,7 +75,11 @@ function drawArrow(
   ctx.fill();
 }
 
-export function renderMeter(down: number, up: number, style: Style): { png: string; text: string; width: number } {
+export function renderMeter(
+  down: number,
+  up: number,
+  style: Style,
+): { png: string; text: string; width: number } {
   const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 2));
   const height = Math.round(HEIGHT_PT * dpr);
   if (!canvas) canvas = document.createElement("canvas");
@@ -76,22 +87,14 @@ export function renderMeter(down: number, up: number, style: Style): { png: stri
 
   const font = `590 ${Math.round(FONT_PT * dpr)}px "SF Mono", ui-monospace, Menlo, monospace`;
   ctx.font = font;
-  const charWidth = ctx.measureText("0").width || 6 * dpr;
+  const charWidth = ctx.measureText("0").width || 5 * dpr;
   const fieldWidth = charWidth * FIELD_CHARS;
   const arrowWidth = ARROW_PT * dpr;
   const textDown = rateField(down);
   const textUp = rateField(up);
 
   const width = Math.round(
-    GAP_SIDES * dpr +
-      arrowWidth +
-      GAP_ARROW * dpr +
-      fieldWidth +
-      GAP_MID * dpr +
-      arrowWidth +
-      GAP_ARROW * dpr +
-      fieldWidth +
-      GAP_SIDES * dpr,
+    GAP_SIDES * dpr + arrowWidth + GAP_ARROW * dpr + fieldWidth + GAP_SIDES * dpr,
   );
 
   canvas.width = width;
@@ -101,23 +104,22 @@ export function renderMeter(down: number, up: number, style: Style): { png: stri
   ctx.textBaseline = "middle";
   ctx.textAlign = "left";
 
-  const baseline = height / 2 + 0.6 * dpr;
-  const solid = "#000000";
-  // Almost idle links fade back so the active direction stands out.
+  // A template image is recoloured by AppKit, so black is the right ink there.
+  // A coloured image keeps its own pixels and has to follow the menu bar.
+  const ink = style.colored ? (style.dark === false ? "#000000" : "#ffffff") : "#000000";
   const lanes: { text: string; up: boolean; color: string; idle: boolean }[] = [
-    { text: textDown, up: false, color: style.colored ? COLOR_DOWN : solid, idle: down < 512 },
-    { text: textUp, up: true, color: style.colored ? COLOR_UP : solid, idle: up < 512 },
+    { text: textDown, up: false, color: style.colored ? COLOR_DOWN : ink, idle: down < 512 },
+    { text: textUp, up: true, color: style.colored ? COLOR_UP : ink, idle: up < 512 },
   ];
 
-  let x = GAP_SIDES * dpr;
-  for (const lane of lanes) {
-    ctx.globalAlpha = lane.idle ? 0.4 : 1;
-    drawArrow(ctx, x + arrowWidth / 2, height / 2, lane.up, dpr, lane.color);
-    x += arrowWidth + GAP_ARROW * dpr;
-    ctx.fillStyle = lane.color;
-    ctx.fillText(lane.text, x, baseline);
-    x += fieldWidth + GAP_MID * dpr;
-  }
+  lanes.forEach((lane, index) => {
+    const cy = LANE_CENTERS[index] * dpr;
+    // Almost idle links fade back so the active direction stands out.
+    ctx.globalAlpha = lane.idle ? 0.45 : 1;
+    drawArrow(ctx, GAP_SIDES * dpr + arrowWidth / 2, cy, lane.up, dpr, lane.color);
+    ctx.fillStyle = ink;
+    ctx.fillText(lane.text, GAP_SIDES * dpr + arrowWidth + GAP_ARROW * dpr, cy + 0.4 * dpr);
+  });
   ctx.globalAlpha = 1;
 
   return { png: canvas.toDataURL("image/png"), text: `${textDown}/${textUp}`, width: width / dpr };
@@ -141,7 +143,7 @@ export async function pushTrayMeter(down: number, up: number, style: Style) {
     console.error("tray meter render failed", error);
     return;
   }
-  const signature = `${rendered.text}|${style.colored ? "c" : "t"}|${rendered.width}`;
+  const signature = `${rendered.text}|${style.colored ? "c" : "t"}|${style.dark === false ? "l" : "d"}|${rendered.width}`;
   if (signature === lastSignature) return;
   lastSignature = signature;
   try {

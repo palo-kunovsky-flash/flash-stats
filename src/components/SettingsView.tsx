@@ -313,6 +313,12 @@ export function SettingsView({
               <Row name={t("coloured")} hint={t("colouredHint")}>
                 <Switch on={settings.trayColored} onChange={(on) => update({ trayColored: on })} />
               </Row>
+              <Row name={t("publicIp")} hint={t("publicIpHint")}>
+                <Switch on={settings.publicIp} onChange={(on) => update({ publicIp: on })} />
+              </Row>
+              <Row name={t("topTalkers")} hint={t("topTalkersHint")}>
+                <Switch on={settings.netTop} onChange={(on) => update({ netTop: on })} />
+              </Row>
             </Group>
             <MeterPreview settings={settings} snapshot={snapshot} label={t("preview")} />
           </>

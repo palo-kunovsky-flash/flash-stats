@@ -21,6 +21,11 @@ export interface CpuInfo {
   tempC: number | null;
   processes: number;
   uptimeSecs: number;
+  /** Where the busy time went, 0..=100 each (Activity Monitor's split). */
+  user: number;
+  system: number;
+  idle: number;
+  nice: number;
 }
 
 export interface GpuInfo {
@@ -45,6 +50,8 @@ export interface MemoryInfo {
   swapTotal: number;
   swapUsed: number;
   pressure: number;
+  /** Processes holding the most memory. */
+  topProcesses: ProcessInfo[];
 }
 
 export interface BatteryInfo {
@@ -63,12 +70,26 @@ export interface BatteryInfo {
   timeRemainingSecs: number | null;
 }
 
+export type NetKind = "wifi" | "ethernet" | "vpn" | "bridge" | "other";
+
+export interface NetProcess {
+  name: string;
+  pid: number;
+  downBps: number;
+  upBps: number;
+}
+
 export interface NetInterface {
   name: string;
+  /** Hardware port name ("Wi-Fi", "Thunderbolt Bridge", …). */
+  label: string;
+  kind: NetKind;
   downBps: number;
   upBps: number;
   totalIn: number;
   totalOut: number;
+  ipv4: string | null;
+  active: boolean;
   isPrimary: boolean;
 }
 
@@ -79,6 +100,17 @@ export interface NetInfo {
   totalOut: number;
   primary: string;
   ipv4: string | null;
+  /** Human name of the primary link. */
+  primaryLabel: string;
+  kind: NetKind;
+  /** Wi-Fi network the primary link is joined to, when macOS discloses it. */
+  ssid: string | null;
+  /** Address the internet sees; null while unknown or switched off. */
+  publicIp: string | null;
+  /** macOS is withholding the Wi-Fi name for want of Location Services access. */
+  ssidBlocked: boolean;
+  /** Processes moving the most data right now. */
+  topProcesses: NetProcess[];
   interfaces: NetInterface[];
 }
 

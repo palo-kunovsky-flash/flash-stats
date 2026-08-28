@@ -105,12 +105,23 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
+  /* `min-height: 0` is what lets this actually scroll: a flex child refuses to
+     shrink below its content without it, and the widget would rather grow past
+     the bottom of the screen than show a scrollbar. */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
 }
 .stack::-webkit-scrollbar {
   display: none;
+}
+/* Capped to the screen, the stack fades out at the bottom edge so it is clear
+   there is more below. Set only while it actually overflows. */
+.stack.scrollable {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
 }
 
 /* ----------------------------------------------------------------- header */
@@ -119,7 +130,9 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 16px;
+  /* Also the drag handle of the whole widget, so it is a real target rather
+     than a hairline. */
+  height: 20px;
   padding: 0 2px;
   flex: none;
 }
@@ -402,10 +415,17 @@ body {
 }
 .proc {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  /* Fixed numeric columns, not `auto`: sized to their content the two figures
+     were a different width in every row and shifted sideways whenever a value
+     changed. With tabular numerals and a fixed box they line up and stay put. */
+  grid-template-columns: minmax(0, 1fr) 66px 66px;
   gap: 9px;
   align-items: baseline;
   font-size: 10px;
+}
+/* Keeps the height of the list constant while the ranking churns. */
+.proc.placeholder {
+  visibility: hidden;
 }
 .pname {
   color: var(--text);
@@ -417,12 +437,12 @@ body {
 .pnum {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  min-width: 34px;
+  font-feature-settings: "tnum" 1;
   text-align: right;
+  white-space: nowrap;
 }
 .pnum.dim {
   color: var(--faint);
-  min-width: 44px;
 }
 .spark-wrap svg {
   display: block;
@@ -430,17 +450,96 @@ body {
 
 /* --------------------------------------------------------------- details */
 
+/* The panel animates open by growing its grid row from 0fr to 1fr, so it stops
+   exactly at the height of its content. The old max-height cap was a guess: a
+   card with more rows than the guess allowed was silently cut off at the
+   bottom, and a frozen transition left the panel collapsed. */
 .details {
-  overflow: hidden;
-  max-height: 0;
+  display: grid;
+  grid-template-rows: 0fr;
   opacity: 0;
-  transition: max-height 0.28s ease, opacity 0.2s ease, margin 0.28s ease;
+  transition: grid-template-rows 0.28s ease, opacity 0.2s ease, margin 0.28s ease;
   margin-top: 0;
 }
+.details > * {
+  overflow: hidden;
+  min-height: 0;
+}
 .card.open .details {
-  max-height: 340px;
+  grid-template-rows: 1fr;
   opacity: 1;
   margin-top: 8px;
+}
+
+/* One column for everything a detail panel contains, so charts, process lists
+   and sensor tables all get the full card width instead of being squeezed into
+   the first column of the key/value grid. */
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.detail > .split {
+  margin-top: 0;
+}
+.detail .spark-wrap svg {
+  width: 100%;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  background: var(--surface-raised);
+  border: 0.5px solid var(--hairline);
+  min-width: 0;
+}
+.stat .sv {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stat .sk {
+  font-size: 8.5px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.subhead {
+  font-size: 8.5px;
+  font-weight: 650;
+  letter-spacing: 0.9px;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding-top: 2px;
+  border-top: 0.5px solid var(--hairline);
+}
+
+/* Wi-Fi name / volume name in a card header: long names shrink instead of
+   pushing the layout apart. */
+.linkname {
+  font-size: 11px;
+  font-weight: 600;
+  max-width: 210px;
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 .kv {
   display: grid;
@@ -470,7 +569,7 @@ body {
   margin: 3px 0;
 }
 .sensors {
-  max-height: 108px;
+  max-height: 190px;
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -1018,4 +1117,254 @@ html[data-view="settings"][data-theme="light"] .side {
 
 .obtn:disabled {
   opacity: 0.28;
+}
+
+/* ============================================================= network panel
+   The popover under the menu-bar meter: same glass language as the widget,
+   just wider rows because it is read at a glance and then dismissed. */
+
+html[data-view="net"],
+html[data-view="net"] body,
+html[data-view="net"] #root {
+  background: transparent;
+}
+
+.netpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 13px 10px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 0.5px solid var(--hairline);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(34px) saturate(180%);
+  -webkit-backdrop-filter: blur(34px) saturate(180%);
+  color: var(--text);
+}
+
+.nhead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.ntitle {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nkind {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--faint);
+  flex: none;
+}
+
+.nrates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nrate {
+  display: grid;
+  grid-template-columns: 12px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.nrate .arrow {
+  font-size: 13px;
+  line-height: 1;
+}
+.nrate .arrow.down {
+  color: var(--down);
+}
+.nrate .arrow.up {
+  color: var(--up);
+}
+.nrate .big {
+  font-size: 15px;
+  font-weight: 600;
+  min-width: 92px;
+}
+.nrate .bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+  overflow: hidden;
+}
+.nrate .bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--down);
+  transition: width 0.3s ease;
+}
+.nrate.up .bar i {
+  background: var(--up);
+}
+
+.nrows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.nrow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11.5px;
+}
+.nrow .k {
+  color: var(--muted);
+  /* Shrinks and truncates before the value does — an address cut short is
+     useless, a shortened label still reads. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nrow .v {
+  margin-left: auto;
+  flex: none;
+  color: var(--text);
+  font-weight: 550;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.nempty {
+  padding: 18px 0;
+  text-align: center;
+  color: var(--muted);
+}
+
+.nfoot {
+  font-size: 9.5px;
+  color: var(--faint);
+  text-align: center;
+  padding-top: 2px;
+}
+
+/* --------------------------------------------------------- labelled charts
+   Two stacked sparklines say nothing about which is which, so each one now
+   carries its own caption and current value. */
+
+.chart {
+  margin-top: 6px;
+}
+.clegend {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.clegend .ckey {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clegend .ckey i {
+  width: 5px;
+  height: 5px;
+  border-radius: 1.5px;
+  flex: none;
+}
+.clegend .cval {
+  margin-left: auto;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: -0.2px;
+  flex: none;
+}
+
+/* -------------------------------------------------------------- copyable
+   Addresses and network names are things people paste elsewhere, so one click
+   copies them. The icon is always laid out — revealing it on hover changed the
+   width of the value and made the row jump — and it leads the text so the
+   digits stay flush against the right edge of the column. */
+
+.copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  /* No padding and no margin: a shrink-to-fit button sized by the border box
+     ate its own padding out of the text, which is how a 14 character address
+     ended up rendered as "92.240.230.25…". The hover surface is painted with a
+     box-shadow spread instead, which costs no layout at all. */
+  padding: 0;
+  margin: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+  flex: none;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.copy .cicon {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  color: var(--faint);
+  transition: color 0.15s ease;
+}
+.copy .cicon svg {
+  display: block;
+  width: 11px;
+  height: 11px;
+}
+.copy .ctext {
+  white-space: nowrap;
+  /* Never the part that gives way: a shortened address cannot be pasted. */
+  flex: none;
+}
+.copy:hover {
+  background: var(--surface-hover);
+  box-shadow: 0 0 0 4px var(--surface-hover);
+}
+.copy:hover .cicon {
+  color: var(--text);
+}
+.copy.done,
+.copy.done .cicon {
+  color: var(--ram);
+}
+
+/* The key/value grid sizes its value column to the content, so a copyable
+   value has room; in the flex rows of the network panel the label is the one
+   that gives way. */
+.kv .v .copy {
+  max-width: 100%;
+}
+
+/* An empty process list still needs to say something, otherwise the section
+   header floats above nothing. */
+.proc.empty-row .pname {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+/* The panel reads at a slightly larger size than the widget cards, so its
+   process rows follow suit — same structure, same alignment, one step up. */
+.netpanel .proc {
+  font-size: 11px;
+  grid-template-columns: minmax(0, 1fr) 74px 74px;
+}
+.netpanel .procs {
+  gap: 3px;
 }

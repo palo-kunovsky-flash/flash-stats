@@ -34,6 +34,11 @@ pub struct CpuInfo {
     pub temp_c: Option<f32>,
     pub processes: u32,
     pub uptime_secs: u64,
+    /// Where the busy time went, 0..=100 each; the split Activity Monitor shows.
+    pub user: f32,
+    pub system: f32,
+    pub idle: f32,
+    pub nice: f32,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -66,6 +71,8 @@ pub struct MemoryInfo {
     pub swap_used: u64,
     /// 0..=100, how tight memory is (pressure)
     pub pressure: f32,
+    /// Processes holding the most memory.
+    pub top_processes: Vec<ProcessInfo>,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -100,17 +107,46 @@ pub struct NetInfo {
     /// Interface with the most traffic (e.g. en0)
     pub primary: String,
     pub ipv4: Option<String>,
+    /// Human name of the primary link ("Wi-Fi", "Ethernet", …)
+    pub primary_label: String,
+    /// `wifi` / `ethernet` / `vpn` / `other` for the primary link
+    pub kind: String,
+    /// Network name of the Wi-Fi the primary link is joined to.
+    pub ssid: Option<String>,
+    /// Address the internet sees; `None` while it is unknown or switched off.
+    pub public_ip: Option<String>,
+    /// The Wi-Fi name exists but macOS withholds it for want of Location
+    /// Services access — worth saying out loud, since the user can fix that.
+    pub ssid_blocked: bool,
+    /// Processes moving the most data right now.
+    pub top_processes: Vec<NetProcess>,
     pub interfaces: Vec<NetInterface>,
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NetProcess {
+    pub name: String,
+    pub pid: i32,
+    pub down_bps: f64,
+    pub up_bps: f64,
 }
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct NetInterface {
     pub name: String,
+    /// Hardware port name from `networksetup` ("Wi-Fi", "Thunderbolt Bridge", …)
+    pub label: String,
+    /// `wifi` / `ethernet` / `vpn` / `other`
+    pub kind: String,
     pub down_bps: f64,
     pub up_bps: f64,
     pub total_in: u64,
     pub total_out: u64,
+    pub ipv4: Option<String>,
+    /// Has an address or has moved bytes — the inactive ones are not shown.
+    pub active: bool,
     pub is_primary: bool,
 }
 

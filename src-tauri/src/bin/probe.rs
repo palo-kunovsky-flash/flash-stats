@@ -8,6 +8,11 @@ use flash_stats_lib::{formatting, models};
 
 fn main() {
     let mut sampler = Sampler::new();
+    // The probe is for looking at everything, including the samples the widget
+    // only collects while the matching card is on screen.
+    sampler
+        .net_top_switch()
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     let meta = sampler.meta();
     println!("== meta ==");
     println!("{}", serde_json::to_string_pretty(&meta).unwrap());

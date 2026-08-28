@@ -47,6 +47,10 @@ export type Settings = {
   showTop: boolean;
   trayNet: boolean;
   trayColored: boolean;
+  /** Look up the address the internet sees (one request every 10 minutes). */
+  publicIp: boolean;
+  /** Show which processes are using the network (samples `nettop`). */
+  netTop: boolean;
   widgets: Record<WidgetId, boolean>;
   /** Temperature unit shown everywhere; sensors are stored in °C. */
   tempUnit: TempUnit;
@@ -94,6 +98,8 @@ export const DEFAULTS: Settings = {
   showTop: true,
   trayNet: true,
   trayColored: true,
+  publicIp: true,
+  netTop: true,
   order: CARD_IDS,
   anchor: "top-right",
   slot: 0,

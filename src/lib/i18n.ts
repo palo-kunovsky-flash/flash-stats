@@ -39,7 +39,7 @@ const STRINGS: Record<string, [string, string]> = {
   app: ["App", "Aplikácie"],
   wired: ["Wired", "Uzamknutá"],
   compressed: ["Compressed", "Zbalená"],
-  cached: ["Cached", "Skladom"],
+  cached: ["Cached files", "Súbory v cache"],
   swap: ["Swap", "Swap"],
   free: ["Free", "Voľné"],
   pressure: ["Pressure", "Tlak"],
@@ -157,6 +157,66 @@ const STRINGS: Record<string, [string, string]> = {
   shortcutFooter: ["Shortcut {keys}", "Skratka {keys}"],
   coresFooter: ["{count} cores", "{count} jadier"],
   noSensors: ["No data — start the widget.", "Žiadne dáta — spusti widget."],
+
+  // CPU time split
+  userTime: ["User", "Používateľ"],
+  systemTime: ["System", "Systém"],
+  idleTime: ["Idle", "Nečinné"],
+  userShort: ["usr", "pou"],
+  systemShort: ["sys", "sys"],
+  tempHistory: ["Temperature", "Teplota"],
+
+  // shared
+  used: ["Used", "Použité"],
+  freeShort: ["free", "voľné"],
+  down: ["Download", "Sťahovanie"],
+  up: ["Upload", "Odosielanie"],
+  average: ["Average", "Priemer"],
+  averageShort: ["avg", "prm"],
+
+  // network
+  link: ["Connection", "Pripojenie"],
+  interfaceRow: ["Interface", "Rozhranie"],
+  wifiNetwork: ["Wi-Fi network", "Sieť Wi-Fi"],
+  activeLinks: ["Other active links", "Ďalšie aktívne pripojenia"],
+  topTalkers: ["Busiest processes", "Najviac komunikujú"],
+  memoryHogs: ["Biggest processes", "Najviac zaberajú"],
+  topTalkersHint: [
+    "which apps are using the connection (samples nettop)",
+    "ktoré aplikácie využívajú pripojenie (cez nettop)",
+  ],
+  noTraffic: ["nothing is talking right now", "teraz nič nekomunikuje"],
+  kindWifi: ["Wi-Fi", "Wi-Fi"],
+  kindEthernet: ["Ethernet", "Ethernet"],
+  kindVpn: ["VPN", "VPN"],
+  kindOther: ["Network", "Sieť"],
+  ssidHidden: ["name not available", "názov nedostupný"],
+  ssidBlocked: [
+    "hidden — allow Location Services",
+    "skryté — povoľ Polohové služby",
+  ],
+  netPanelHint: ["Click the meter again to close", "Ďalším kliknutím zavrieš"],
+  noNetwork: ["No active connection", "Žiadne aktívne pripojenie"],
+
+  // memory wording: what is left is reclaimable, not literally free
+  availableMem: ["Available", "Dostupné"],
+  availableShort: ["avail", "dostupné"],
+
+  // CPU detail: where the load actually sits
+  whereTheLoad: ["Where the load is", "Kde je záťaž"],
+  perfCluster: ["Performance cores ({count})", "Výkonové jadrá ({count})"],
+  effCluster: ["Efficiency cores ({count})", "Úsporné jadrá ({count})"],
+  busiestCore: ["Busiest core", "Najvyťaženejšie jadro"],
+  coresOver50: ["Cores over 50 %", "Jadrá nad 50 %"],
+
+  // addresses
+  copyHint: ["Click to copy", "Klikni na skopírovanie"],
+  localIp: ["Local IP", "Lokálna IP"],
+  publicIp: ["Public IP", "Verejná IP"],
+  publicIpHint: [
+    "one request to api.ipify.org every 10 minutes",
+    "jedna požiadavka na api.ipify.org každých 10 minút",
+  ],
 };
 
 export const LangContext = createContext<Lang>("en");

@@ -172,6 +172,10 @@ function mockSnapshot(): Snapshot {
       tempC: 46 + wave(6, 9, 0.3),
       processes: 540,
       uptimeSecs: 3600 * 27 + 940,
+      user: 18.4,
+      system: 7.1,
+      idle: 74.5,
+      nice: 0,
     },
     gpu: {
       usage: wave(18, 45, 0.7),
@@ -193,6 +197,11 @@ function mockSnapshot(): Snapshot {
       swapTotal: 7e9,
       swapUsed: 1.2e9,
       pressure: 22 + wave(10, 20, 0.2),
+      topProcesses: [
+        { pid: 512, name: "WindowServer", cpu: 7.8, memBytes: 2.4e9, memPercent: 7.1 },
+        { pid: 114, name: "Safari", cpu: 24.5, memBytes: 1.4e9, memPercent: 4.1 },
+        { pid: 386, name: "Code Helper", cpu: 12.1, memBytes: 820e6, memPercent: 2.4 },
+      ],
     },
     battery: {
       present: true,
@@ -216,8 +225,29 @@ function mockSnapshot(): Snapshot {
       totalOut: 4.2e10,
       primary: "en0",
       ipv4: "10.1.1.127",
+      primaryLabel: "Wi-Fi",
+      kind: "wifi",
+      ssid: "Kunovsky 5G",
+      publicIp: "89.173.24.11",
+      ssidBlocked: false,
+      topProcesses: [
+        { name: "Safari", pid: 114, downBps: 1.1e6, upBps: 84e3 },
+        { name: "Spotify", pid: 902, downBps: 210e3, upBps: 9e3 },
+        { name: "Dropbox", pid: 731, downBps: 41e3, upBps: 320e3 },
+      ],
       interfaces: [
-        { name: "en0", downBps: down, upBps: up, totalIn: 3.02e10, totalOut: 4.2e10, isPrimary: true },
+        {
+          name: "en0",
+          label: "Wi-Fi",
+          kind: "wifi",
+          downBps: down,
+          upBps: up,
+          totalIn: 3.02e10,
+          totalOut: 4.2e10,
+          ipv4: "10.1.1.127",
+          active: true,
+          isPrimary: true,
+        },
       ],
     },
     topProcesses: [

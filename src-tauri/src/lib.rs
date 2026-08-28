@@ -22,6 +22,7 @@ use crate::window::Presentation;
 const TRAY_ID: &str = "net-meter";
 const WINDOW: &str = "main";
 const SETTINGS: &str = "settings";
+const NET_PANEL: &str = "net";
 
 pub struct Shared {
     sampler: Mutex<Sampler>,
@@ -42,6 +43,16 @@ pub struct Shared {
     /// Last strings pushed to the status item (avoid touching AppKit needlessly).
     tray_shown: Mutex<Option<(String, String)>>,
     tray: Mutex<Option<TrayIcon>>,
+    /// When the network panel last closed because it lost focus. Clicking the
+    /// status item takes focus away first, so without this the panel would be
+    /// hidden and immediately reopened by the very same click.
+    panel_blurred_at: Mutex<Option<std::time::Instant>>,
+    /// The one outbound request this app makes (public address lookup) can be
+    /// switched off; the flag is shared with the sampler.
+    public_ip: Arc<AtomicBool>,
+    /// Per-process network sampling runs a subprocess, so it is only on while
+    /// the card that shows it is visible.
+    net_top: Arc<AtomicBool>,
 }
 
 pub type SharedRef = Arc<Shared>;
@@ -120,6 +131,23 @@ fn set_tray_image(state: State<'_, SharedRef>, png: Vec<u8>, template: bool) -> 
         debug_log(&format!("tray meter {width}x{height}px template={template}"));
     }
     Ok(())
+}
+
+/// Public address lookup: one HTTPS request to api.ipify.org every ten
+/// minutes, and nothing at all while this is off.
+#[tauri::command]
+fn set_public_ip(state: State<'_, SharedRef>, enabled: bool) -> bool {
+    state.public_ip.store(enabled, Ordering::Relaxed);
+    debug_log(&format!("public ip lookup -> {enabled}"));
+    enabled
+}
+
+/// Per-process network rates come from `nettop`, which takes a second per
+/// sample — so it only runs while something is actually showing the result.
+#[tauri::command]
+fn set_net_top(state: State<'_, SharedRef>, enabled: bool) -> bool {
+    state.net_top.store(enabled, Ordering::Relaxed);
+    enabled
 }
 
 #[tauri::command]
@@ -442,6 +470,89 @@ fn set_language(app: tauri::AppHandle, state: tauri::State<'_, SharedRef>, code:
     Ok(())
 }
 
+/// The menu-bar meter is about the network, so clicking it opens a small
+/// network panel right under the status item instead of hiding the widget —
+/// which is what people kept doing by accident.
+#[tauri::command]
+fn toggle_net_panel(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(NET_PANEL) else {
+        return Err("net panel window is missing".into());
+    };
+    if window.is_visible().unwrap_or(false) {
+        let _ = window.hide();
+        debug_log("net panel closed");
+        return Ok(());
+    }
+    if let Some(state) = app.try_state::<SharedRef>() {
+        if let Ok(mut blurred) = state.panel_blurred_at.lock() {
+            let just_closed = blurred
+                .map(|at| at.elapsed() < Duration::from_millis(400))
+                .unwrap_or(false);
+            *blurred = None;
+            if just_closed {
+                return Ok(());
+            }
+        }
+    }
+    place_under_tray(&app, &window);
+    window.show().map_err(|error| error.to_string())?;
+    window::raise(&app, NET_PANEL);
+    debug_log(&format!(
+        "net panel opened at {:?}",
+        window.outer_position().ok()
+    ));
+    Ok(())
+}
+
+/// Anchors the panel under the status item, clamped to the screen it is on.
+///
+/// `tray.rect()` can come back empty (the icon is in the overflow menu, the
+/// menu bar is hidden, a Space is switching), and a panel left at a stale
+/// position looks exactly like a click that did nothing — so there is always a
+/// fallback: the top right corner, under the menu bar.
+fn place_under_tray(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let icon = app
+        .tray_by_id(TRAY_ID)
+        .and_then(|tray| tray.rect().ok().flatten())
+        .map(|rect| {
+            (
+                rect.position.to_physical::<f64>(scale),
+                rect.size.to_physical::<f64>(scale),
+            )
+        });
+
+    let (mut x, y, probe) = match icon {
+        Some((position, icon_size)) => (
+            position.x + icon_size.width / 2.0 - size.width as f64 / 2.0,
+            position.y + icon_size.height + 6.0 * scale,
+            (position.x, position.y),
+        ),
+        None => {
+            let monitor = window.primary_monitor().ok().flatten();
+            let (origin, area) = match monitor.as_ref() {
+                Some(m) => (*m.position(), *m.size()),
+                None => return,
+            };
+            let x = origin.x as f64 + area.width as f64 - size.width as f64 - 12.0 * scale;
+            let y = origin.y as f64 + 28.0 * scale;
+            (x, y, (x, y))
+        }
+    };
+
+    if let Ok(Some(monitor)) = window.monitor_from_point(probe.0, probe.1) {
+        let area = monitor.size();
+        let origin = monitor.position();
+        let margin = 8.0 * scale;
+        let right = origin.x as f64 + area.width as f64 - size.width as f64 - margin;
+        x = x.clamp(origin.x as f64 + margin, right.max(origin.x as f64 + margin));
+    }
+    let _ = window.set_position(tauri::PhysicalPosition::new(x.round(), y.round()));
+}
+
 #[tauri::command]
 fn show_widget(app: tauri::AppHandle) {
     set_widget_visible(&app, true);
@@ -522,7 +633,14 @@ fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
                 ..
             } = event
             {
-                toggle_window(tray.app_handle());
+                // Left click is about the network meter, so it opens the
+                // network panel. It deliberately has no fallback that touches
+                // the widget: hiding the desktop widget by clicking the meter
+                // is never what anyone meant, and the widget is toggled from
+                // the right-click menu instead.
+                if let Err(error) = toggle_net_panel(tray.app_handle().clone()) {
+                    debug_log(&format!("net panel failed: {error}"));
+                }
             }
         });
 
@@ -587,6 +705,8 @@ pub fn run() {
             set_interval,
             set_tray_net,
             set_tray_image,
+            set_public_ip,
+            set_net_top,
             tray_image_mode,
             set_presentation,
             set_language,
@@ -596,6 +716,7 @@ pub fn run() {
             log_line,
             audit_enabled,
             menu_bar_height,
+            toggle_net_panel,
             quit_app,
             open_activity_monitor
         ])
@@ -606,6 +727,34 @@ pub fn run() {
 // policy app also gets swept away by "show desktop".
 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
         let tray = build_tray(&handle)?;
+            // The Wi-Fi name is location data to macOS, so it is only disclosed
+            // to an authorised process. CLLocationManager talks to locationd
+            // through the main run loop, so the request has to be made on the
+            // main thread *and* after that run loop is actually turning —
+            // asking from inside `setup` is too early and goes nowhere.
+            {
+                let location_handle = handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(2));
+                    let _ = location_handle.run_on_main_thread(|| {
+                        sensors::location::request_once();
+                    });
+                    // The answer arrives asynchronously. Worth one line in the
+                    // log: "no Wi-Fi name" reads very differently at "denied"
+                    // than at "unavailable" (an unbundled dev build, where the
+                    // usage description is not sealed into the signature).
+                    std::thread::sleep(Duration::from_secs(15));
+                    debug_log(&format!(
+                        "location services: {} (Wi-Fi name {})",
+                        sensors::location::status_name(),
+                        if sensors::location::authorized() {
+                            "available"
+                        } else {
+                            "hidden by macOS"
+                        }
+                    ));
+                });
+            }
             #[cfg(target_os = "macos")]
             unsafe {
                 use objc2::msg_send;
@@ -614,8 +763,11 @@ app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 let policy: isize = msg_send![ns_app, activationPolicy];
                 debug_log(&format!("activation policy -> {policy} (1 = accessory, no Dock tile)"));
             }
+            let sampler = Sampler::new();
+            let public_ip = sampler.public_ip_switch();
+            let net_top = sampler.net_top_switch();
             let shared: SharedRef = Arc::new(Shared {
-                sampler: Mutex::new(Sampler::new()),
+                sampler: Mutex::new(sampler),
                 rings: Mutex::new(Rings::default()),
                 last: Mutex::new(None),
                 interval_ms: AtomicU64::new(1000),
@@ -626,6 +778,9 @@ app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 lang: Mutex::new(i18n::Lang::En),
                 tray_shown: Mutex::new(None),
                 tray: Mutex::new(Some(tray)),
+                panel_blurred_at: Mutex::new(None),
+                public_ip,
+                net_top,
             });
             app.manage(Arc::clone(&shared));
 
@@ -685,7 +840,13 @@ app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                             },
                             human(snap.net.down_bps),
                             human(snap.net.up_bps),
-                            tray_title(&snap),
+                            format!(
+                                "{} {} ssid={} pub={}",
+                                snap.net.primary,
+                                snap.net.kind,
+                                snap.net.ssid.as_deref().unwrap_or("-"),
+                                snap.net.public_ip.as_deref().unwrap_or("-")
+                            ),
                             started.elapsed().as_millis(),
                         ));
                         let phases = shared
@@ -709,10 +870,22 @@ app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The network panel behaves like a popover: clicking anywhere else
+            // dismisses it.
+            if let tauri::WindowEvent::Focused(false) = event {
+                if window.label() == NET_PANEL && window.is_visible().unwrap_or(false) {
+                    let _ = window.hide();
+                    if let Some(state) = window.try_state::<SharedRef>() {
+                        if let Ok(mut blurred) = state.panel_blurred_at.lock() {
+                            *blurred = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Closing the preferences window only hides it — the widget and
                 // the menu bar meter keep running.
-                if window.label() == SETTINGS {
+                if window.label() == SETTINGS || window.label() == NET_PANEL {
                     api.prevent_close();
                     let _ = window.hide();
                 }

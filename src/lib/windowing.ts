@@ -9,6 +9,20 @@ import type { Anchor, Presentation } from "./settings";
 
 const SHELL_PADDING = 10;
 
+/* Moves the widget makes on its own (fitting the content, landing on the grid)
+   arrive as ordinary "window moved" events. Saving those as if the user had
+   dragged the window is what made the widget crawl across the screen a few
+   pixels at a time, so they are marked and ignored. */
+let quietUntil = 0;
+
+export function markProgrammaticMove(ms = 600) {
+  quietUntil = Date.now() + ms;
+}
+
+export function isProgrammaticMove(): boolean {
+  return Date.now() < quietUntil;
+}
+
 export async function getWindow() {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   return getCurrentWindow();
@@ -39,18 +53,81 @@ export function measureHeight(): number {
   return Math.max(120, Math.ceil(total) + SHELL_PADDING);
 }
 
-export async function resizeToContent(width: number): Promise<number> {
+/**
+ * Fit the window to its content while the anchored corner stays exactly where
+ * it is. AppKit resizes a window around its bottom-left origin, so a card that
+ * opens or a wider widget used to push the top-right corner around; the window
+ * is put back on the anchor right after the resize.
+ */
+export async function resizeToContent(
+  width: number,
+  anchor?: Anchor,
+  topInset = 0,
+): Promise<number> {
   if (!inTauri) return measureHeight();
-  const height = measureHeight();
-  if (height <= 0) return 0;
+  const natural = measureHeight();
+  if (natural <= 0) return 0;
   try {
     const win = await getWindow();
-    const { LogicalSize } = await import("@tauri-apps/api/dpi");
+    const { LogicalSize, PhysicalPosition } = await import("@tauri-apps/api/dpi");
+    // Never taller than the screen it is on: an expanded card used to push the
+    // widget past the bottom edge, where the rest of it simply could not be
+    // read. Capped, the card stack scrolls instead.
+    const height = Math.min(natural, await availableHeight(topInset));
+    const before = await win.outerPosition().catch(() => null);
+    const sizeBefore = await win.outerSize().catch(() => null);
+    markProgrammaticMove();
     await win.setSize(new LogicalSize(width, height));
+    const after = await win.outerPosition().catch(() => null);
+    const sizeAfter = await win.outerSize().catch(() => null);
+    if (before && after && sizeBefore && sizeAfter) {
+      // Keep the corner the widget is anchored to, not always the top left.
+      const keepRight = anchor?.endsWith("right") ?? false;
+      const keepBottom = anchor?.startsWith("bottom") ?? false;
+      const x = keepRight
+        ? before.x + sizeBefore.width - sizeAfter.width
+        : before.x;
+      const y = keepBottom
+        ? before.y + sizeBefore.height - sizeAfter.height
+        : before.y;
+      if (x !== after.x || y !== after.y) {
+        markProgrammaticMove();
+        await win.setPosition(new PhysicalPosition(Math.round(x), Math.round(y)));
+      }
+    }
   } catch (error) {
     void logLine("error", `resize failed: ${error}`);
   }
-  return height;
+  return Math.min(natural, await availableHeight(topInset));
+}
+
+/** Usable height in logical px on the display the widget is on. */
+async function availableHeight(topInset: number): Promise<number> {
+  try {
+    const win = await getWindow();
+    const { currentMonitor, primaryMonitor } = await import("@tauri-apps/api/window");
+    const monitor = (await currentMonitor()) ?? (await primaryMonitor());
+    if (!monitor) return Number.MAX_SAFE_INTEGER;
+    const scale = monitor.scaleFactor || (await win.scaleFactor());
+    return Math.max(
+      MIN_HEIGHT,
+      monitor.size.height / scale - topInset - MENU_BAR_GAP - EDGE_MARGIN * 2,
+    );
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+/** Grid step in physical px for the display the widget is on. */
+export async function gridStep(): Promise<number> {
+  if (!inTauri) return GRID;
+  try {
+    const win = await getWindow();
+    const scale = await win.scaleFactor();
+    return Math.max(1, Math.round(GRID * scale));
+  } catch {
+    return GRID;
+  }
 }
 
 /** Lattice the widget snaps to, in logical px — same idea as the system grid. */
@@ -59,6 +136,11 @@ export const GRID = 8;
 export const SLOT_GAP = 16;
 /** Distance from the screen edge, in logical px. */
 const EDGE_MARGIN = 20;
+/** Extra air under the menu bar for the top row, so the drag strip of the
+    widget never ends up tucked against (or behind) the bar. */
+const MENU_BAR_GAP = 12;
+/** However small the screen, the widget stays usable. */
+const MIN_HEIGHT = 160;
 
 export function snapToGrid(value: number): number {
   return Math.round(value / GRID) * GRID;
@@ -138,7 +220,7 @@ export async function placeOnGrid(options: {
     // it, otherwise the widget sits behind the bar and its top row is unreadable.
     const menuBarScreen = monitors.every((m) => monitor.position.y <= m.position.y);
     const topInset = options.anchor.startsWith("top") && menuBarScreen
-      ? Math.round((options.topInset ?? 0) * scale)
+      ? Math.round(((options.topInset ?? 0) + MENU_BAR_GAP) * scale)
       : 0;
     const rawY = options.anchor.startsWith("top")
       ? top + topInset + margin + options.slot * pitch
@@ -154,6 +236,7 @@ export async function placeOnGrid(options: {
       x: clamp(snapToGrid(x), boundX[0], boundX[1]),
       y: clamp(snapToGrid(rawY), boundY[0], boundY[1]),
     };
+    markProgrammaticMove();
     await win.setPosition(new PhysicalPosition(point.x, point.y));
     void logLine(
       "ui",
@@ -196,6 +279,7 @@ export async function moveWindowTo(position: { x: number; y: number }) {
   try {
     const win = await getWindow();
     const { PhysicalPosition } = await import("@tauri-apps/api/dpi");
+    markProgrammaticMove();
     await win.setPosition(new PhysicalPosition(position.x, position.y));
   } catch (error) {
     void logLine("error", `move failed: ${error}`);

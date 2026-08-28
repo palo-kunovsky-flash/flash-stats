@@ -62,6 +62,29 @@
           "state": "active",
           "radius": 12
         }
+      },
+      {
+        "label": "net",
+        "title": "Network",
+        "url": "index.html?view=net",
+        "width": 320,
+        "height": 400,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "visible": false,
+        "dragDropEnabled": false,
+        "acceptFirstMouse": true,
+        "windowEffects": {
+          "effects": [
+            "hudWindow"
+          ],
+          "state": "active",
+          "radius": 14
+        }
       }
     ],
     "security": {

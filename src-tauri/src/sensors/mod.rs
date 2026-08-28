@@ -3,10 +3,15 @@
 
 pub mod battery;
 pub mod gpu;
+pub mod location;
 pub mod machine;
+pub mod net;
+pub mod wifi;
 pub mod temps;
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, Networks, ProcessesToUpdate, System};
@@ -29,8 +34,29 @@ pub struct Sampler {
     core_kinds: Vec<String>,
     cached_processes: u32,
     cached_top: Vec<ProcessInfo>,
+    /// The same process table ranked by resident memory instead of CPU.
+    cached_top_memory: Vec<ProcessInfo>,
     cached_sensors: Vec<Sensor>,
     max_seen_freq_mhz: f32,
+    /// Previous scheduler ticks, for the user / system split.
+    prev_ticks: Option<machine::CpuTicks>,
+    cpu_split: (f32, f32, f32, f32),
+    /// `en0 -> "Wi-Fi"`; a shell-out, so it is refreshed rarely.
+    ports: net::Ports,
+    default_route: Option<String>,
+    ssid: Option<String>,
+    /// Public address, looked up off the sampling thread so a slow or dead
+    /// network never stalls a tick.
+    public_ip: Arc<Mutex<Option<String>>>,
+    public_ip_enabled: Arc<AtomicBool>,
+    public_ip_pending: Arc<AtomicBool>,
+    public_ip_at: Option<Instant>,
+    /// Per-process network rates. `nettop` blocks for a second per sample, so
+    /// it lives on its own thread and only runs while someone is looking.
+    net_top: Arc<Mutex<Vec<NetProcess>>>,
+    net_top_enabled: Arc<AtomicBool>,
+    net_top_pending: Arc<AtomicBool>,
+    net_top_at: Option<Instant>,
     /// Debug: how long each phase of the last tick took (ms).
     pub phase_ms: [u32; 6],
 }
@@ -65,8 +91,22 @@ impl Sampler {
             core_kinds,
             cached_processes: 0,
             cached_top: Vec::new(),
+            cached_top_memory: Vec::new(),
             cached_sensors: Vec::new(),
             max_seen_freq_mhz,
+            prev_ticks: machine::cpu_ticks(),
+            cpu_split: (0.0, 0.0, 100.0, 0.0),
+            ports: net::Ports::read(),
+            default_route: net::default_route(),
+            ssid: None,
+            public_ip: Arc::new(Mutex::new(None)),
+            public_ip_enabled: Arc::new(AtomicBool::new(true)),
+            public_ip_pending: Arc::new(AtomicBool::new(false)),
+            public_ip_at: None,
+            net_top: Arc::new(Mutex::new(Vec::new())),
+            net_top_enabled: Arc::new(AtomicBool::new(false)),
+            net_top_pending: Arc::new(AtomicBool::new(false)),
+            net_top_at: None,
             phase_ms: [0; 6],
         }
     }
@@ -102,7 +142,9 @@ impl Sampler {
             self.sys
                 .refresh_processes(ProcessesToUpdate::All, true);
             self.cached_processes = self.sys.processes().len() as u32;
-            self.cached_top = top_processes(&self.sys);
+            let (by_cpu, by_memory) = rank_processes(&self.sys);
+            self.cached_top = by_cpu;
+            self.cached_top_memory = by_memory;
         }
         mark(3);
 
@@ -167,6 +209,7 @@ impl Sampler {
         self.max_seen_freq_mhz = self.max_seen_freq_mhz.max(live_max);
 
         let load = System::load_average();
+        let (user, system, idle, nice) = self.cpu_split();
         CpuInfo {
             usage: self.sys.global_cpu_usage(),
             cores,
@@ -179,7 +222,42 @@ impl Sampler {
             temp_c: temps::hottest(sensors, &[SensorGroup::Cpu]),
             processes: self.cached_processes,
             uptime_secs: System::uptime(),
+            user,
+            system,
+            idle,
+            nice,
         }
+    }
+
+    /// Share of the busy time that went to user code vs. the kernel. The
+    /// counters are 32 bit and wrap, so a negative delta keeps the last split.
+    fn cpu_split(&mut self) -> (f32, f32, f32, f32) {
+        let Some(now) = machine::cpu_ticks() else {
+            return self.cpu_split;
+        };
+        if let Some(prev) = self.prev_ticks {
+            let delta = |a: u64, b: u64| a.checked_sub(b);
+            let parts = (
+                delta(now.user, prev.user),
+                delta(now.system, prev.system),
+                delta(now.idle, prev.idle),
+                delta(now.nice, prev.nice),
+            );
+            if let (Some(u), Some(s), Some(i), Some(n)) = parts {
+                let total = (u + s + i + n) as f32;
+                if total > 0.0 {
+                    let scale = 100.0 / total;
+                    self.cpu_split = (
+                        u as f32 * scale,
+                        s as f32 * scale,
+                        i as f32 * scale,
+                        n as f32 * scale,
+                    );
+                }
+            }
+        }
+        self.prev_ticks = Some(now);
+        self.cpu_split
     }
 
     fn max_cpu_freq(&self) -> f32 {
@@ -222,6 +300,12 @@ impl Sampler {
             info.compressed = compressed_phys;
             info.uncompressed = v.uncompressed_in_compressor * pg;
             info.used = app + wired + compressed_phys;
+            // sysinfo's `available_memory` counts pages that are already in
+            // `used` here, so used + available could add up to more than the
+            // machine has. Activity Monitor's model is the honest one: what is
+            // not held by apps, the kernel or the compressor is available,
+            // cached files included since the kernel hands those back on demand.
+            info.available = total.saturating_sub(info.used);
 
             // Memory pressure: how much easily reclaimable memory is left,
             // with swap / heavy compression forcing it up.
@@ -242,12 +326,132 @@ impl Sampler {
             info.app = self.sys.used_memory();
             info.pressure = ((((used / tot) - 0.65) / 0.3).clamp(0.0, 1.0) * 100.0) as f32;
         }
+        info.top_processes = self.cached_top_memory.clone();
         info
     }
 
     // ------------------------------------------------------------- Network
 
-    fn read_net(&self, dt: f64) -> NetInfo {
+    /// Shared switch for the public-address lookup, so the settings window can
+    /// turn the one outbound request this app makes off.
+    pub fn public_ip_switch(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.public_ip_enabled)
+    }
+
+    /// Shared switch for the per-process network sampling, so it only runs
+    /// while the card that shows it is actually on screen.
+    pub fn net_top_switch(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.net_top_enabled)
+    }
+
+    /// Refreshes the per-process rates every few seconds, off the tick thread.
+    fn refresh_net_top(&mut self) {
+        if !self.net_top_enabled.load(Ordering::Relaxed) {
+            if let Ok(mut slot) = self.net_top.lock() {
+                slot.clear();
+            }
+            self.net_top_at = None;
+            return;
+        }
+        let due = self
+            .net_top_at
+            .map(|at| at.elapsed() > std::time::Duration::from_secs(4))
+            .unwrap_or(true);
+        if !due || self.net_top_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.net_top_at = Some(Instant::now());
+        let slot = Arc::clone(&self.net_top);
+        let pending = Arc::clone(&self.net_top_pending);
+        let enabled = Arc::clone(&self.net_top_enabled);
+        let _ = std::thread::Builder::new()
+            .name("net-top".into())
+            .spawn(move || {
+                let found: Vec<NetProcess> = net::talkers(5)
+                    .into_iter()
+                    .map(|t| NetProcess {
+                        name: t.name,
+                        pid: t.pid,
+                        down_bps: t.down_bps,
+                        up_bps: t.up_bps,
+                    })
+                    .collect();
+                if enabled.load(Ordering::Relaxed) {
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = found;
+                    }
+                }
+                pending.store(false, Ordering::SeqCst);
+            });
+    }
+
+    /// Kicks off a lookup at most every ten minutes, on its own thread.
+    fn refresh_public_ip(&mut self) {
+        if !self.public_ip_enabled.load(Ordering::Relaxed) {
+            if let Ok(mut slot) = self.public_ip.lock() {
+                *slot = None;
+            }
+            self.public_ip_at = None;
+            return;
+        }
+        let due = self
+            .public_ip_at
+            .map(|at| at.elapsed() > std::time::Duration::from_secs(600))
+            .unwrap_or(true);
+        if !due || self.public_ip_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.public_ip_at = Some(Instant::now());
+        let slot = Arc::clone(&self.public_ip);
+        let pending = Arc::clone(&self.public_ip_pending);
+        let enabled = Arc::clone(&self.public_ip_enabled);
+        let _ = std::thread::Builder::new()
+            .name("public-ip".into())
+            .spawn(move || {
+                let found = net::public_ip();
+                if enabled.load(Ordering::Relaxed) {
+                    if let Ok(mut guard) = slot.lock() {
+                        // A failed lookup keeps the previous answer: a blip
+                        // should not blank the row.
+                        if found.is_some() {
+                            *guard = found;
+                        }
+                    }
+                }
+                pending.store(false, Ordering::SeqCst);
+            });
+    }
+
+    /// The per-process list with readable names: `nettop` cuts them at fifteen
+    /// characters ("io.tailscale.ip"), and the process table we already keep
+    /// has the whole thing.
+    fn net_talkers(&self) -> Vec<NetProcess> {
+        let Ok(found) = self.net_top.lock() else {
+            return Vec::new();
+        };
+        found
+            .iter()
+            .map(|entry| {
+                let name = usize::try_from(entry.pid)
+                    .ok()
+                    .and_then(|pid| self.sys.process(sysinfo::Pid::from(pid)))
+                    .map(|process| process.name().to_string_lossy().into_owned())
+                    .filter(|name| name.len() >= entry.name.len())
+                    .unwrap_or_else(|| entry.name.clone());
+                NetProcess { name, ..entry.clone() }
+            })
+            .collect()
+    }
+
+    fn read_net(&mut self, dt: f64) -> NetInfo {
+        // Both of these shell out, so they run on a slow cadence.
+        if self.tick_index % 120 == 1 {
+            self.ports = net::Ports::read();
+        }
+        if self.tick_index % 10 == 1 {
+            self.default_route = net::default_route();
+        }
+
         let mut interfaces: Vec<NetInterface> = Vec::new();
         let mut sum_in = 0u64;
         let mut sum_out = 0u64;
@@ -256,39 +460,37 @@ impl Sampler {
             if !counts(name) {
                 continue;
             }
+            let label = self.ports.label(name);
+            let kind = net::kind_of(name, Some(&label));
+            let ipv4 = data
+                .ip_networks()
+                .iter()
+                .map(|ip| ip.addr)
+                .find(|addr| addr.is_ipv4() && !addr.is_loopback() && !is_link_local(addr))
+                .map(|addr| addr.to_string());
             let down = data.received() as f64 / dt;
             let up = data.transmitted() as f64 / dt;
             sum_in += data.total_received();
             sum_out += data.total_transmitted();
             interfaces.push(NetInterface {
                 name: name.to_string(),
+                label,
+                kind: kind.to_string(),
                 down_bps: down,
                 up_bps: up,
                 total_in: data.total_received(),
                 total_out: data.total_transmitted(),
+                // An interface without an address and without traffic is a
+                // leftover port nobody is using — it only clutters the card.
+                active: ipv4.is_some() || down + up > 0.5,
+                ipv4,
                 is_primary: false,
             });
         }
 
-        if interfaces.is_empty() {
-            // Nothing "physical" around — fall back to any interface with traffic.
-            for (name, data) in self.networks.list().iter() {
-                let n = name.to_lowercase();
-                if n.starts_with("lo") || (data.total_received() == 0 && data.total_transmitted() == 0)
-                {
-                    continue;
-                }
-                interfaces.push(NetInterface {
-                    name: name.to_string(),
-                    down_bps: data.received() as f64 / dt,
-                    up_bps: data.transmitted() as f64 / dt,
-                    total_in: data.total_received(),
-                    total_out: data.total_transmitted(),
-                    is_primary: false,
-                });
-            }
-            sum_in = interfaces.iter().map(|i| i.total_in).sum();
-            sum_out = interfaces.iter().map(|i| i.total_out).sum();
+        // Everything asleep: keep the ones that at least have an address.
+        if interfaces.iter().any(|i| i.active) {
+            interfaces.retain(|i| i.active);
         }
 
         interfaces.sort_by(|a, b| {
@@ -296,50 +498,78 @@ impl Sampler {
                 .partial_cmp(&(a.down_bps + a.up_bps))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        if let  Some(first) = interfaces.first_mut() {
-            first.is_primary = true;
+
+        // The link with the default route is the one that gets you online; the
+        // busiest interface is only the fallback when there is no route.
+        let primary_index = self
+            .default_route
+            .as_ref()
+            .and_then(|route| interfaces.iter().position(|i| &i.name == route))
+            .unwrap_or(0);
+        if let Some(chosen) = interfaces.get_mut(primary_index) {
+            chosen.is_primary = true;
         }
-        let primary = interfaces
-            .first()
+        let primary_info = interfaces.get(primary_index).cloned();
+        let primary = primary_info
+            .as_ref()
             .map(|i| i.name.clone())
-            .unwrap_or_else(|| "—".into());
-        let primary_total: f64 = interfaces
-            .first()
-            .map(|i| i.down_bps + i.up_bps)
-            .unwrap_or(0.0);
-        // While the busiest link is idle, fall back to the total of all links.
-        let (down_bps, up_bps) = if primary_total > 0.5 {
-            (
-                interfaces.first().map(|i| i.down_bps).unwrap_or(0.0),
-                interfaces.first().map(|i| i.up_bps).unwrap_or(0.0),
-            )
-        } else {
-            (
-                interfaces.iter().map(|i| i.down_bps).sum(),
-                interfaces.iter().map(|i| i.up_bps).sum(),
-            )
+            .unwrap_or_else(|| "\u{2014}".into());
+        let primary_label = primary_info
+            .as_ref()
+            .map(|i| i.label.clone())
+            .unwrap_or_else(|| "\u{2014}".into());
+        let kind = primary_info
+            .as_ref()
+            .map(|i| i.kind.clone())
+            .unwrap_or_else(|| "other".into());
+
+        // While the main link is idle, show the busiest one instead of a sum:
+        // a VPN carries the same bytes twice and would double the rate.
+        let busiest = interfaces.first();
+        let (down_bps, up_bps) = match primary_info.as_ref() {
+            Some(i) if i.down_bps + i.up_bps > 0.5 => (i.down_bps, i.up_bps),
+            _ => (
+                busiest.map(|i| i.down_bps).unwrap_or(0.0),
+                busiest.map(|i| i.up_bps).unwrap_or(0.0),
+            ),
         };
 
-        let ipv4 = self
-            .networks
-            .list()
-            .iter()
-            .find(|(n, _)| n.as_str() == primary)
-            .or_else(|| self.networks.list().iter().next())
-            .and_then(|(_, d)| {
-                d.ip_networks()
-                    .iter()
-                    .map(|ip| ip.addr.to_string())
-                    .find(|s| !s.contains(':'))
+        self.refresh_public_ip();
+        self.refresh_net_top();
+
+        if kind == "wifi" {
+            // CoreWLAN is an in-process call, so it can run every tick; the
+            // command line fallback spawns a process and runs rarely. Both are
+            // silent unless macOS granted Location Services access, which is
+            // what the name of a Wi-Fi network counts as since macOS 14.
+            self.ssid = net::ssid(&primary).or_else(|| {
+                if self.tick_index % 30 == 1 {
+                    net::ssid_slow(&primary)
+                } else {
+                    self.ssid.clone()
+                }
             });
+        } else {
+            self.ssid = None;
+        }
+
+        // macOS withholds the name rather than failing, so "wifi but no name and
+        // no permission" is the case worth telling the user about.
+        let ssid_blocked = kind == "wifi" && self.ssid.is_none() && !location::authorized();
 
         NetInfo {
             down_bps,
             up_bps,
             total_in: sum_in,
             total_out: sum_out,
+            ipv4: primary_info.as_ref().and_then(|i| i.ipv4.clone()),
             primary,
-            ipv4,
+            primary_label,
+            kind,
+            ssid_blocked,
+            top_processes: self.net_talkers(),
+            ssid: self.ssid.clone(),
+            public_ip: self.public_ip.lock().ok().and_then(|v| v.clone()),
             interfaces,
         }
     }
@@ -412,9 +642,11 @@ impl Sampler {
 
 /// The five busiest processes by CPU (falling back to memory when nothing is
 /// busy — a machine idling at 1% still has a top list).
-fn top_processes(sys: &System) -> Vec<ProcessInfo> {
+/// Everything the process table can tell us, in one pass — the two rankings
+/// come from the same snapshot rather than two walks of the list.
+fn rank_processes(sys: &System) -> (Vec<ProcessInfo>, Vec<ProcessInfo>) {
     let total = sys.total_memory().max(1) as f32;
-    let mut list: Vec<ProcessInfo> = sys
+    let all: Vec<ProcessInfo> = sys
         .processes()
         .values()
         .map(|p| ProcessInfo {
@@ -425,16 +657,23 @@ fn top_processes(sys: &System) -> Vec<ProcessInfo> {
             mem_percent: p.memory() as f32 / total * 100.0,
         })
         .collect();
-    list.sort_by(|a, b| {
+
+    let mut by_cpu = all.clone();
+    by_cpu.sort_by(|a, b| {
         b.cpu
             .partial_cmp(&a.cpu)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.mem_bytes.cmp(&a.mem_bytes))
     });
-    list.truncate(6);
-    list.retain(|p| p.cpu > 0.05 || p.mem_percent > 0.2);
-    list.truncate(5);
-    list
+    by_cpu.truncate(6);
+    by_cpu.retain(|p| p.cpu > 0.05 || p.mem_percent > 0.2);
+    by_cpu.truncate(5);
+
+    let mut by_memory = all;
+    by_memory.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
+    by_memory.truncate(5);
+
+    (by_cpu, by_memory)
 }
 
 /// `performance` / `efficiency` label per logical core.
@@ -461,9 +700,16 @@ fn counts(name: &str) -> bool {
     if n.starts_with("lo") {
         return false;
     }
-    ["en", "eth", "wlan", "bond"]
+    // utun/ppp are VPNs — worth showing when they carry traffic, and the
+    // `active` flag drops them again when they do not.
+    ["en", "eth", "wlan", "bond", "utun", "ppp", "ipsec"]
         .iter()
         .any(|prefix| n.starts_with(prefix))
+}
+
+/// 169.254.x.x — a self-assigned address means the link never came up.
+fn is_link_local(addr: &std::net::IpAddr) -> bool {
+    matches!(addr, std::net::IpAddr::V4(v4) if v4.is_link_local())
 }
 
 /// Ring buffers for the sparkline history (oldest first).
