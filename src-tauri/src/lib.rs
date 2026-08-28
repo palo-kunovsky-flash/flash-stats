@@ -453,6 +453,11 @@ fn set_widget_visible(app: &AppHandle, visible: bool) {
     } else {
         let _ = window.hide();
     }
+    // The page cannot work this out for itself: a window on the desktop icon
+    // level is "occluded" as far as WebKit is concerned, so `document.hidden`
+    // is true the whole time the widget is plainly on screen. Telling it
+    // outright is what lets it stop drawing when there is nothing to draw for.
+    let _ = app.emit("widget://visible", visible);
 }
 
 /// macOS sweeps windows away on ⌘F3 / "show desktop" and when an app is
@@ -510,6 +515,7 @@ fn toggle_net_panel(app: tauri::AppHandle) -> Result<(), String> {
     let window = ensure_window(&app, NET_PANEL)?;
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
+        let _ = app.emit("panel://visible", false);
         debug_log("net panel closed");
         return Ok(());
     }
@@ -527,6 +533,7 @@ fn toggle_net_panel(app: tauri::AppHandle) -> Result<(), String> {
     place_under_tray(&app, &window);
     window.show().map_err(|error| error.to_string())?;
     window::raise(&app, NET_PANEL);
+    let _ = app.emit("panel://visible", true);
     debug_log(&format!(
         "net panel opened at {:?}",
         window.outer_position().ok()
@@ -546,6 +553,7 @@ fn show_net_panel(app: tauri::AppHandle) -> Result<(), String> {
     place_under_tray(&app, &window);
     window.show().map_err(|error| error.to_string())?;
     window::raise(&app, NET_PANEL);
+    let _ = app.emit("panel://visible", true);
     Ok(())
 }
 
@@ -945,6 +953,7 @@ app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == NET_PANEL && window.is_visible().unwrap_or(false) {
                     let _ = window.hide();
+                    let _ = window.app_handle().emit("panel://visible", false);
                     if let Some(state) = window.try_state::<SharedRef>() {
                         if let Ok(mut blurred) = state.panel_blurred_at.lock() {
                             *blurred = Some(std::time::Instant::now());

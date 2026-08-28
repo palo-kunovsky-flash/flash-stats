@@ -11,6 +11,9 @@ import { logLine } from "./lib/telemetry";
  * itself stays a slim bar on the desktop.
  */
 export default function SettingsWindow() {
+  useEffect(() => {
+    document.documentElement.classList.add("ready");
+  }, []);
   const { settings, update, ready, lang } = useSettings();
   const [meta, setMeta] = useState<Meta | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);

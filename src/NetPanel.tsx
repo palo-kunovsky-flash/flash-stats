@@ -10,6 +10,7 @@ import { bps, bytes, clamp } from "./lib/format";
 import { LangContext, translate } from "./lib/i18n";
 import { useSettings } from "./lib/settings";
 import { inTauri, useTelemetry } from "./lib/telemetry";
+import { useVisible } from "./lib/visible";
 
 const WIDTH = 320;
 
@@ -25,7 +26,12 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
 export default function NetPanel() {
   const { settings, lang } = useSettings();
   const t = (key: string) => translate(lang, key);
-  const { snap, hist } = useTelemetry(settings.intervalMs);
+  // The panel window survives its first open and then spends most of its life
+  // dismissed, so it stops taking updates entirely while hidden. Samples still
+  // arrive and are kept; they are simply applied in one go when it reopens, so
+  // the panel is never a frame out of date and never shows a gap.
+  const onScreenNow = useVisible("panel://visible");
+  const { snap, hist } = useTelemetry(settings.intervalMs, { visible: onScreenNow });
 
   // The window is built hidden on the first click and only shown once this
   // has painted — otherwise the click lands on a webview that is still loading
@@ -34,12 +40,9 @@ export default function NetPanel() {
   useEffect(() => {
     if (!inTauri || announced.current) return;
     announced.current = true;
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        void import("@tauri-apps/api/core").then(({ invoke }) =>
-          invoke("show_net_panel").catch(() => undefined),
-        );
-      }),
+    document.documentElement.classList.add("ready");
+    void import("@tauri-apps/api/core").then(({ invoke }) =>
+      invoke("show_net_panel").catch(() => undefined),
     );
   }, []);
 
@@ -48,7 +51,7 @@ export default function NetPanel() {
   // IPC call twice a second and a window that never quite settled.
   const lastHeight = useRef(0);
   useEffect(() => {
-    if (!inTauri) return;
+    if (!inTauri || !onScreenNow) return;
     const fit = async () => {
       const shell = document.querySelector<HTMLElement>(".netpanel");
       if (!shell) return;
@@ -62,7 +65,7 @@ export default function NetPanel() {
     void fit();
     const timer = window.setInterval(() => void fit(), 500);
     return () => window.clearInterval(timer);
-  }, [snap]);
+  }, [snap, onScreenNow]);
 
   // Same check the widget runs on its cards: a value that does not fit is
   // reported rather than silently shortened with an ellipsis.
@@ -189,15 +192,16 @@ export default function NetPanel() {
             {links.length > 1 ? (
               <>
                 <div className="subhead">{t("activeLinks")}</div>
-                <div className="nrows">
-                  {links.map((i) => (
-                    <Row
-                      key={i.name}
-                      k={`${i.isPrimary ? "▸ " : ""}${i.label}`}
-                      v={`↓${bps(i.downBps)} ↑${bps(i.upBps)}`}
-                    />
-                  ))}
-                </div>
+                <ProcList
+                  empty={t("none")}
+                  rows={links.map((i) => ({
+                    key: i.name,
+                    name: `${i.isPrimary ? "▸ " : ""}${i.label}`,
+                    a: `↓ ${bps(i.downBps, 0)}`,
+                    b: `↑ ${bps(i.upBps, 0)}`,
+                    title: i.name,
+                  }))}
+                />
               </>
             ) : null}
           </>

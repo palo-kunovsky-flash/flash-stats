@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Sparkline } from "./Sparkline";
 import type { History, Meta, Sensor, Snapshot } from "../types";
 import { copyText } from "../lib/clipboard";
@@ -58,17 +58,6 @@ export function Widget({
 }: WidgetProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  // Mounted first, animated one frame later, so the panel still grows open
-  // instead of appearing all at once.
-  const [shown, setShown] = useState(false);
-  useEffect(() => {
-    if (!open) {
-      setShown(false);
-      return;
-    }
-    const frame = requestAnimationFrame(() => setShown(true));
-    return () => cancelAnimationFrame(frame);
-  }, [open]);
   if (hidden) return null;
   return (
     <section
@@ -90,9 +79,11 @@ export function Widget({
       {extra}
       {showSpark ? spark : null}
       {meta ? <div className="meta num">{meta}</div> : null}
-      {details && open ? (
-        <div className={`details ${shown ? "in" : ""}`}>{details()}</div>
-      ) : null}
+      {/* Open is the resting state and the animation is decoration: a window on
+          the desktop level counts as occluded, where WebKit throttles rAF, so
+          anything that waits for a frame to apply the open state can simply
+          never arrive — and the panel stays shut. */}
+      {details && open ? <div className="details">{details()}</div> : null}
     </section>
   );
 }
@@ -913,15 +904,19 @@ export function NetworkWidget({
           {links.length > 1 ? (
             <>
               <Sub title={t("activeLinks")} />
-              <div className="kv">
-                {links.map((i) => (
-                  <KV
-                    key={i.name}
-                    k={`${i.isPrimary ? "▸ " : ""}${i.label} (${i.name})`}
-                    v={`↓${bps(i.downBps)} ↑${bps(i.upBps)}`}
-                  />
-                ))}
-              </div>
+              {/* Same two aligned columns as the process lists: a link and a
+                  process are both "a thing moving bytes", and reading them in
+                  two different shapes on one card is needless work. */}
+              <ProcList
+                empty={t("none")}
+                rows={links.map((i) => ({
+                  key: i.name,
+                  name: `${i.isPrimary ? "▸ " : ""}${i.label}`,
+                  a: `↓ ${bps(i.downBps, 0)}`,
+                  b: `↑ ${bps(i.upBps, 0)}`,
+                  title: i.name,
+                }))}
+              />
             </>
           ) : null}
         </div>

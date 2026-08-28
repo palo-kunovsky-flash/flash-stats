@@ -24,6 +24,7 @@ import {
 } from "./lib/windowing";
 import { bytes } from "./lib/format";
 import { LangContext, translate } from "./lib/i18n";
+import { useVisible } from "./lib/visible";
 import { UnitContext } from "./lib/units";
 
 /* ------------------------------------------------------------------ hotkey */
@@ -97,6 +98,11 @@ export default function App() {
   const { settings, update, ready, lang } = useSettings();
   const t = (key: string) => translate(lang, key);
   const { snap, hist, meta } = useTelemetry(settings.intervalMs);
+  // Hidden means "do not draw", never "do not measure": the sampler keeps
+  // running in Rust and the history keeps filling, so nothing is missing when
+  // the widget comes back. The menu-bar meter is drawn from this window too,
+  // which is why the data keeps flowing rather than the whole page idling.
+  const onScreenNow = useVisible("widget://visible");
   const placed = useRef(false);
   const lastHeight = useRef(0);
   /** Last width actually applied to the window. Changing only the width leaves
@@ -113,11 +119,22 @@ export default function App() {
 
   useEffect(() => {
     void logLine("ui", "App mounted");
+    // Reveals the styled tree. An effect, not an animation frame: this window
+    // is occluded as far as WebKit is concerned and throttles rAF, which would
+    // leave the page invisible.
+    document.documentElement.classList.add("ready");
   }, []);
+
+  useEffect(() => {
+    void logLine(
+      "ui",
+      `widget ${onScreenNow ? "on screen: drawing" : "hidden: drawing paused, sampling continues"}`,
+    );
+  }, [onScreenNow]);
 
   /* -------------------------------------------------- window: fit content */
   useEffect(() => {
-    if (!inTauri || !ready) return;
+    if (!inTauri || !ready || !onScreenNow) return;
     if (menuBar.current === null) {
       void import("@tauri-apps/api/core").then(({ invoke }) =>
         invoke<number>("menu_bar_height")
@@ -176,7 +193,7 @@ export default function App() {
       observer.disconnect();
       mutations.disconnect();
     };
-  }, [ready, settings.width, settings.widgets, settings.anchor]);
+  }, [ready, onScreenNow, settings.width, settings.widgets, settings.anchor]);
 
   /* ------------------------------------------------ window: place & remember */
   // Put the widget on its grid slot: chosen corner, `slot` rows down. Also the
@@ -549,7 +566,7 @@ export default function App() {
       </header>
 
       <div className="stack" data-tauri-drag-region>
-        {snap && ready ? (
+        {snap && ready && onScreenNow ? (
           <>
             {settings.order
               .filter((id) => settings.widgets[id])

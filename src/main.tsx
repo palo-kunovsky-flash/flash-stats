@@ -35,8 +35,3 @@ createRoot(document.getElementById("root")!).render(
   </StrictMode>,
 );
 
-// Reveal only once the styled tree has actually been painted, so the bar never
-// shows up as raw markup while the stylesheet is still on its way.
-requestAnimationFrame(() =>
-  requestAnimationFrame(() => document.documentElement.classList.add("ready")),
-);

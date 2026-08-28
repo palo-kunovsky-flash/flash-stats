@@ -55,12 +55,47 @@ function push(history: History, s: Snapshot): History {
   };
 }
 
-export function useTelemetry(intervalMs: number): Telemetry {
+export type TelemetryOptions = {
+  /**
+   * Hold updates back while this is false.
+   *
+   * Samples keep arriving and keep being folded into the history; only the
+   * React state stops moving, so nothing renders. Becoming visible applies the
+   * latest sample and the whole history at once — no gap in the charts and no
+   * frame of stale data.
+   *
+   * Not for the widget window: it draws the menu-bar meter, which has to keep
+   * up whether or not anything is on screen.
+   */
+  visible?: boolean;
+};
+
+export function useTelemetry(intervalMs: number, options: TelemetryOptions = {}): Telemetry {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [hist, setHist] = useState<History>(EMPTY_HISTORY);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [live, setLive] = useState(inTauri);
   const timer = useRef<number | null>(null);
+  const paused = useRef(false);
+  /** Newest sample and history while paused, applied on the way back. */
+  const pending = useRef<{ snap: Snapshot; hist: History } | null>(null);
+
+  // The listener needs the current history without re-subscribing every tick.
+  const histRef = useRef(hist);
+  histRef.current = hist;
+
+  const { visible } = options;
+  useEffect(() => {
+    if (visible === undefined) return;
+    paused.current = !visible;
+    if (!visible) return;
+    const held = pending.current;
+    pending.current = null;
+    if (held) {
+      setSnap(held.snap);
+      setHist(held.hist);
+    }
+  }, [visible]);
 
   useEffect(() => {
     let disposed = false;
@@ -98,6 +133,13 @@ export function useTelemetry(intervalMs: number): Telemetry {
       try {
         const { listen } = await import("@tauri-apps/api/event");
         const stop = await listen<Snapshot>("telemetry", (event) => {
+          if (paused.current) {
+            // Keep folding samples into the history so the charts stay whole,
+            // but leave React alone until the window is looked at again.
+            const base = pending.current?.hist ?? histRef.current;
+            pending.current = { snap: event.payload, hist: push(base, event.payload) };
+            return;
+          }
           setSnap(event.payload);
           setHist((prev) => push(prev, event.payload));
         });

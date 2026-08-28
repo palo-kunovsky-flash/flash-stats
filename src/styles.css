@@ -455,25 +455,26 @@ body {
 
 /* --------------------------------------------------------------- details */
 
-/* The panel animates open by growing its grid row from 0fr to 1fr, so it stops
-   exactly at the height of its content. The old max-height cap was a guess: a
-   card with more rows than the guess allowed was silently cut off at the
-   bottom, and a frozen transition left the panel collapsed. */
+/* The panel is mounted only while the card is open, and it is laid out open:
+   the grow is a CSS animation, which needs no frame to be scheduled and leaves
+   the element in its final state even where animations are throttled. A JS
+   timed class could not promise that. */
 .details {
   display: grid;
-  grid-template-rows: 0fr;
-  opacity: 0;
-  transition: grid-template-rows 0.28s ease, opacity 0.2s ease, margin 0.28s ease;
-  margin-top: 0;
+  grid-template-rows: 1fr;
+  margin-top: 8px;
+  animation: detail-in 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 .details > * {
   overflow: hidden;
   min-height: 0;
 }
-.details.in {
-  grid-template-rows: 1fr;
-  opacity: 1;
-  margin-top: 8px;
+@keyframes detail-in {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    margin-top: 0;
+  }
 }
 
 /* One column for everything a detail panel contains, so charts, process lists
