@@ -27,6 +27,22 @@ export default function NetPanel() {
   const t = (key: string) => translate(lang, key);
   const { snap, hist } = useTelemetry(settings.intervalMs);
 
+  // The window is built hidden on the first click and only shown once this
+  // has painted — otherwise the click lands on a webview that is still loading
+  // and the panel appears as unstyled markup.
+  const announced = useRef(false);
+  useEffect(() => {
+    if (!inTauri || announced.current) return;
+    announced.current = true;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        void import("@tauri-apps/api/core").then(({ invoke }) =>
+          invoke("show_net_panel").catch(() => undefined),
+        );
+      }),
+    );
+  }, []);
+
   // The panel hugs its content, the same way the widget does — but only when
   // the content really changed height. Resizing on a timer regardless meant an
   // IPC call twice a second and a window that never quite settled.
@@ -100,14 +116,14 @@ export default function NetPanel() {
                 <span className="arrow down">↓</span>
                 <span className="num big">{bps(n.downBps, 1)}</span>
                 <span className="bar">
-                  <i style={{ width: `${clamp((n.downBps / peak) * 100, 1.5, 100)}%` }} />
+                  <i style={{ transform: `scaleX(${clamp(n.downBps / peak, 0.015, 1)})` }} />
                 </span>
               </div>
               <div className="nrate up">
                 <span className="arrow up">↑</span>
                 <span className="num big">{bps(n.upBps, 1)}</span>
                 <span className="bar">
-                  <i style={{ width: `${clamp((n.upBps / peak) * 100, 1.5, 100)}%` }} />
+                  <i style={{ transform: `scaleX(${clamp(n.upBps / peak, 0.015, 1)})` }} />
                 </span>
               </div>
             </div>

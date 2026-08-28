@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, Networks, ProcessesToUpdate, System};
+use sysinfo::{
+    CpuRefreshKind, DiskRefreshKind, Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System,
+};
 
 use crate::formatting::percent;
 use crate::models::*;
@@ -37,6 +39,7 @@ pub struct Sampler {
     /// The same process table ranked by resident memory instead of CPU.
     cached_top_memory: Vec<ProcessInfo>,
     cached_sensors: Vec<Sensor>,
+    cached_gpu: GpuInfo,
     max_seen_freq_mhz: f32,
     /// Previous scheduler ticks, for the user / system split.
     prev_ticks: Option<machine::CpuTicks>,
@@ -93,6 +96,7 @@ impl Sampler {
             cached_top: Vec::new(),
             cached_top_memory: Vec::new(),
             cached_sensors: Vec::new(),
+            cached_gpu: GpuInfo::default(),
             max_seen_freq_mhz,
             prev_ticks: machine::cpu_ticks(),
             cpu_split: (0.0, 0.0, 100.0, 0.0),
@@ -138,9 +142,15 @@ impl Sampler {
         }
         mark(2);
         if self.tick_index % 5 == 1 {
-            // Enumerating processes is the priciest call — every 5th tick is plenty.
-            self.sys
-                .refresh_processes(ProcessesToUpdate::All, true);
+            // Enumerating processes is one of the priciest calls, and the
+            // default refresh also collects the working directory, environment,
+            // open files and disk usage of every process — none of which the
+            // widget shows. Asking for CPU and memory alone is far cheaper.
+            self.sys.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            );
             self.cached_processes = self.sys.processes().len() as u32;
             let (by_cpu, by_memory) = rank_processes(&self.sys);
             self.cached_top = by_cpu;
@@ -153,9 +163,10 @@ impl Sampler {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // The IOHID sensor read is the most expensive call (~50 ms) and
-        // temperature moves slowly, so every third tick is plenty.
-        if self.tick_index % 3 == 1 {
+        // The IOHID sensor read is the most expensive call (~60 ms) and heat
+        // moves slowly: at one sample every six seconds nothing on screen is
+        // any less true, and it costs a fifth of what it used to.
+        if self.tick_index % 6 == 1 {
             self.cached_sensors = self.temps.read();
         }
         let sensors = self.cached_sensors.clone();
@@ -267,7 +278,12 @@ impl Sampler {
     // ---------------------------------------------------------------- GPU
 
     fn read_gpu(&mut self, sensors: &[Sensor]) -> GpuInfo {
-        let mut info = self.gpu.read();
+        // Walking the IOKit accelerator registry is not free either, and the
+        // number it yields is already a short-window average.
+        if self.tick_index % 2 == 1 || self.cached_gpu.usage.is_none() {
+            self.cached_gpu = self.gpu.read();
+        }
+        let mut info = self.cached_gpu.clone();
         info.temp_c = temps::average(sensors, &[SensorGroup::Gpu]);
         info
     }

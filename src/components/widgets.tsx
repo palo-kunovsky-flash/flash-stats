@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sparkline } from "./Sparkline";
 import type { History, Meta, Sensor, Snapshot } from "../types";
 import { copyText } from "../lib/clipboard";
@@ -31,7 +31,9 @@ type WidgetProps = {
   spark?: ReactNode;
   meta?: ReactNode;
   extra?: ReactNode;
-  details?: ReactNode;
+  /** Built only while the card is open: rendering every row of every panel on
+      every tick was the single most expensive thing the widget did. */
+  details?: () => ReactNode;
   hidden?: boolean;
   showSpark?: boolean;
 };
@@ -56,6 +58,17 @@ export function Widget({
 }: WidgetProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  // Mounted first, animated one frame later, so the panel still grows open
+  // instead of appearing all at once.
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (!open) {
+      setShown(false);
+      return;
+    }
+    const frame = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
   if (hidden) return null;
   return (
     <section
@@ -77,7 +90,9 @@ export function Widget({
       {extra}
       {showSpark ? spark : null}
       {meta ? <div className="meta num">{meta}</div> : null}
-      {details ? <div className="details">{details}</div> : null}
+      {details && open ? (
+        <div className={`details ${shown ? "in" : ""}`}>{details()}</div>
+      ) : null}
     </section>
   );
 }
@@ -371,7 +386,7 @@ export function CpuWidget({
                 className={`core ${kinds[i] === "efficiency" ? "eff" : ""}`}
                 title={`${kinds[i] ?? "core"} ${i}: ${usage.toFixed(0)}%`}
               >
-                <i style={{ height: `${clamp(usage, 2, 100)}%` }} />
+                <i style={{ transform: `scaleY(${clamp(usage, 2, 100) / 100})` }} />
               </span>
             ))}
           </div>
@@ -393,7 +408,7 @@ export function CpuWidget({
           </span>
         </>
       }
-      details={
+      details={() => (
         <div className="detail">
           <Stats
             items={[
@@ -456,7 +471,7 @@ export function CpuWidget({
             </>
           ) : null}
         </div>
-      }
+      )}
     />
   );
 }
@@ -505,7 +520,7 @@ export function GpuWidget({
           </span>
         </>
       }
-      details={
+      details={() => (
         <div className="detail">
           <Stats
             items={[
@@ -523,7 +538,7 @@ export function GpuWidget({
             <KV k={t("temperature")} v={tu(gpu.tempC, 1)} />
           </div>
         </div>
-      }
+      )}
     />
   );
 }
@@ -587,7 +602,7 @@ export function MemoryWidget({
           ) : null}
         </>
       }
-      details={
+      details={() => (
         <div className="detail">
           <Stats
             items={[
@@ -623,7 +638,7 @@ export function MemoryWidget({
             </>
           ) : null}
         </div>
-      }
+      )}
     />
   );
 }
@@ -726,7 +741,7 @@ export function BatteryWidget({
           </span>
         </>
       }
-      details={
+      details={() => (
         <div className="detail">
           <Stats
             items={[
@@ -748,7 +763,7 @@ export function BatteryWidget({
             <KV k={t("temperature")} v={tu(b.tempC, 1)} />
           </div>
         </div>
-      }
+      )}
     />
   );
 }
@@ -770,7 +785,7 @@ function NetRow({
     <div className="netrow" style={{ ["--accent" as string]: color } as React.CSSProperties}>
       <span className="arrow">{arrow}</span>
       <span className="barwrap">
-        <i style={{ width: `${clamp(ratio * 100, 1.5, 100)}%` }} />
+        <i style={{ transform: `scaleX(${clamp(ratio, 0.015, 1)})` }} />
       </span>
       <span className="val num">{bps(value)}</span>
     </div>
@@ -853,7 +868,7 @@ export function NetworkWidget({
           ) : null}
         </>
       }
-      details={
+      details={() => (
         <div className="detail">
           <Stats
             items={[
@@ -910,7 +925,7 @@ export function NetworkWidget({
             </>
           ) : null}
         </div>
-      }
+      )}
     />
   );
 }
@@ -966,7 +981,7 @@ export function DiskWidget({
           <span>{t("ofCapacity", { value: bytes(d.totalSpace, 0) })}</span>
         </>
       }
-      details={
+      details={() => (
         <div className="detail">
           <Stats
             items={[
@@ -982,7 +997,7 @@ export function DiskWidget({
             <KV k={t("total")} v={bytes(d.totalSpace, 1)} />
           </div>
         </div>
-      }
+      )}
     />
   );
 }
@@ -1051,7 +1066,7 @@ export function TempsWidget({
           </span>
         </>
       }
-      details={
+      details={() => (
         <div className="detail">
           <Stats
             items={[
@@ -1062,7 +1077,7 @@ export function TempsWidget({
           />
           <SensorList sensors={sorted} />
         </div>
-      }
+      )}
     />
   );
 }

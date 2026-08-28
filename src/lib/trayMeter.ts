@@ -79,7 +79,7 @@ export function renderMeter(
   down: number,
   up: number,
   style: Style,
-): { png: string; text: string; width: number } {
+): { pixels: Uint8Array; text: string; width: number; height: number } {
   const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 2));
   const height = Math.round(HEIGHT_PT * dpr);
   if (!canvas) canvas = document.createElement("canvas");
@@ -122,35 +122,38 @@ export function renderMeter(
   });
   ctx.globalAlpha = 1;
 
-  return { png: canvas.toDataURL("image/png"), text: `${textDown}/${textUp}`, width: width / dpr };
-}
-
-function base64ToBytes(dataUrl: string): number[] {
-  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-  const binary = atob(base64);
-  const bytes = new Array<number>(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+  // Raw RGBA straight out of the canvas: encoding a PNG here, base64-ing it and
+  // shipping it as a JSON array of numbers was by far the most expensive thing
+  // this widget did every second.
+  const pixels = new Uint8Array(ctx.getImageData(0, 0, width, height).data.buffer);
+  return { pixels, text: `${textDown}/${textUp}`, width, height };
 }
 
 /** Redraw and push to the tray; skips the IPC when nothing changed. */
 export async function pushTrayMeter(down: number, up: number, style: Style) {
   if (!inTauri) return;
-  let rendered: { png: string; text: string; width: number };
+  let rendered: ReturnType<typeof renderMeter>;
   try {
     rendered = renderMeter(down, up, style);
   } catch (error) {
     console.error("tray meter render failed", error);
     return;
   }
-  const signature = `${rendered.text}|${style.colored ? "c" : "t"}|${style.dark === false ? "l" : "d"}|${rendered.width}`;
+  const signature = `${rendered.text}|${style.colored ? "c" : "t"}|${
+    style.dark === false ? "l" : "d"
+  }|${rendered.width}`;
   if (signature === lastSignature) return;
   lastSignature = signature;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_tray_image", {
-      png: base64ToBytes(rendered.png),
-      template: !style.colored,
+    // The pixels travel as the raw request body; the size and the template flag
+    // ride along as headers, since a raw body cannot also carry arguments.
+    await invoke("set_tray_image", rendered.pixels, {
+      headers: {
+        "x-width": String(rendered.width),
+        "x-height": String(rendered.height),
+        "x-template": style.colored ? "0" : "1",
+      },
     });
   } catch (error) {
     console.error("set_tray_image failed", error);

@@ -439,9 +439,20 @@ function MeterPreview({
   const up = snapshot?.net.upBps ?? 220_000;
 
   useEffect(() => {
+    // The meter now hands the widget raw pixels rather than a PNG, so the
+    // preview paints them into a canvas of its own instead of using a data URL.
     void import("../lib/trayMeter")
       .then(({ renderMeter }) => {
-        setUrl(renderMeter(down, up, { colored: settings.trayColored }).png);
+        const { pixels, width, height } = renderMeter(down, up, {
+          colored: settings.trayColored,
+        });
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return setUrl(null);
+        ctx.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+        setUrl(canvas.toDataURL("image/png"));
       })
       .catch(() => setUrl(null));
   }, [down, up, settings.trayColored]);

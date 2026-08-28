@@ -61,7 +61,8 @@
           ],
           "state": "active",
           "radius": 12
-        }
+        },
+        "create": false
       },
       {
         "label": "net",
@@ -84,7 +85,8 @@
           ],
           "state": "active",
           "radius": 14
-        }
+        },
+        "create": false
       }
     ],
     "security": {

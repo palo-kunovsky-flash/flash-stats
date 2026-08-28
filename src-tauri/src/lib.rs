@@ -113,22 +113,46 @@ fn set_tray_net(state: State<'_, SharedRef>, enabled: bool) -> bool {
     enabled
 }
 
-/// The widget renders its own menu-bar meter (canvas -> PNG) and ships the
-/// bytes here; macOS then shows a crisp, font-perfect status item.
-/// The widget draws its own menu-bar meter (canvas -> PNG at device scale);
-/// the tray implementation scales it to the 18 pt status-item height.
+/// The widget draws its own menu-bar meter and ships the pixels here; macOS
+/// then shows a crisp, font-perfect status item.
+///
+/// The bytes arrive as a raw IPC body rather than as JSON. The old path
+/// encoded a PNG in the webview, base64'd it, turned that into a JavaScript
+/// array of ~1500 numbers and serialised it — once a second, forever. This one
+/// hands over the canvas buffer as it stands and builds the image from it.
 #[tauri::command]
-fn set_tray_image(state: State<'_, SharedRef>, png: Vec<u8>, template: bool) -> Result<(), String> {
-    let image = Image::from_bytes(&png).map_err(|error| error.to_string())?;
-    let width = image.width();
-    let height = image.height();
+fn set_tray_image(
+    state: State<'_, SharedRef>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(rgba) = request.body() else {
+        return Err("tray image must be sent as raw bytes".into());
+    };
+    let header = |name: &str| -> Option<u32> {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+    };
+    let width = header("x-width").ok_or("missing x-width")?;
+    let height = header("x-height").ok_or("missing x-height")?;
+    let template = header("x-template").unwrap_or(1) == 1;
+    if rgba.len() as u32 != width * height * 4 {
+        return Err(format!(
+            "expected {} bytes for {width}x{height}, got {}",
+            width * height * 4,
+            rgba.len()
+        ));
+    }
+
+    let image = Image::new_owned(rgba.clone(), width, height);
     let guard = state.tray.lock().map_err(|error| error.to_string())?;
     if let  Some(tray) = guard.as_ref() {
         tray.set_icon_with_as_template(Some(image), template)
             .map_err(|error| error.to_string())?;
         state.tray_image.store(true, Ordering::Relaxed);
         let _ = tray.set_title(None::<&str>);
-        debug_log(&format!("tray meter {width}x{height}px template={template}"));
     }
     Ok(())
 }
@@ -475,9 +499,15 @@ fn set_language(app: tauri::AppHandle, state: tauri::State<'_, SharedRef>, code:
 /// which is what people kept doing by accident.
 #[tauri::command]
 fn toggle_net_panel(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window(NET_PANEL) else {
-        return Err("net panel window is missing".into());
-    };
+    // First click builds the window and stops there: a webview needs a moment
+    // to load, and showing it immediately puts unstyled markup on screen. The
+    // page calls `show_net_panel` once it has painted. Every later click finds
+    // the window already built and opens it at once.
+    if app.get_webview_window(NET_PANEL).is_none() {
+        ensure_window(&app, NET_PANEL)?;
+        return Ok(());
+    }
+    let window = ensure_window(&app, NET_PANEL)?;
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
         debug_log("net panel closed");
@@ -501,6 +531,21 @@ fn toggle_net_panel(app: tauri::AppHandle) -> Result<(), String> {
         "net panel opened at {:?}",
         window.outer_position().ok()
     ));
+    Ok(())
+}
+
+/// The panel reports that it has rendered, which is when it may be shown.
+#[tauri::command]
+fn show_net_panel(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(NET_PANEL) else {
+        return Ok(());
+    };
+    if window.is_visible().unwrap_or(false) {
+        return Ok(());
+    }
+    place_under_tray(&app, &window);
+    window.show().map_err(|error| error.to_string())?;
+    window::raise(&app, NET_PANEL);
     Ok(())
 }
 
@@ -567,13 +612,37 @@ fn hide_widget(app: tauri::AppHandle) {
 /// tauri.conf.json (with native vibrancy) and only ever shown or hidden here.
 #[tauri::command]
 fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window(SETTINGS) else {
-        return Err("settings window is missing".into());
-    };
+    let window = ensure_window(&app, SETTINGS)?;
     let _ = window.unminimize();
     let _ = window.show();
     window::raise(&app, SETTINGS);
     Ok(())
+}
+
+/// Windows other than the widget are declared with `"create": false` and built
+/// the first time they are asked for.
+///
+/// A window is a whole WebKit content process: measured on this machine the
+/// settings window and the network panel cost 98 MB of footprint between them,
+/// sitting hidden, doing nothing, from the moment the app launched.
+fn ensure_window(app: &AppHandle, label: &str) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(label) {
+        return Ok(window);
+    }
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == label)
+        .cloned()
+        .ok_or_else(|| format!("no window config for {label}"))?;
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|error| error.to_string())?
+        .build()
+        .map_err(|error| error.to_string())?;
+    debug_log(&format!("created window «{label}» on demand"));
+    Ok(window)
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
@@ -717,6 +786,7 @@ pub fn run() {
             audit_enabled,
             menu_bar_height,
             toggle_net_panel,
+            show_net_panel,
             quit_app,
             open_activity_monitor
         ])

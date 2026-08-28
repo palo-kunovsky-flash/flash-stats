@@ -301,14 +301,18 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
+  /* Full height, scaled down: animating `height` relayouts the strip on every
+     frame of every tick, `transform` is composited and costs nothing. */
+  height: 100%;
   display: block;
   border-radius: 2px;
+  transform-origin: bottom;
   background: linear-gradient(
     to top,
     color-mix(in srgb, var(--accent) 55%, transparent),
     var(--accent)
   );
-  transition: height 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: transform 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 .cores .core.eff i {
   opacity: 0.62;
@@ -328,7 +332,6 @@ body {
 .split span {
   display: block;
   height: 100%;
-  transition: flex-grow 0.35s ease;
 }
 .legend {
   display: flex;
@@ -376,10 +379,12 @@ body {
 .netrow .barwrap i {
   display: block;
   height: 100%;
+  width: 100%;
   border-radius: 2px;
+  transform-origin: left;
   background: var(--accent);
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent);
-  transition: width 0.3s ease;
+  transition: transform 0.3s ease;
 }
 .netrow .val {
   font-size: 10.5px;
@@ -465,7 +470,7 @@ body {
   overflow: hidden;
   min-height: 0;
 }
-.card.open .details {
+.details.in {
   grid-template-rows: 1fr;
   opacity: 1;
   margin-top: 8px;
@@ -1199,9 +1204,11 @@ html[data-view="net"] #root {
 .nrate .bar i {
   display: block;
   height: 100%;
+  width: 100%;
   border-radius: 2px;
+  transform-origin: left;
   background: var(--down);
-  transition: width 0.3s ease;
+  transition: transform 0.3s ease;
 }
 .nrate.up .bar i {
   background: var(--up);
