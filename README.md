@@ -1,34 +1,68 @@
-# Flash Stats
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" width="88" alt="">
+</p>
 
-A system monitor for macOS that lives on the desktop like a widget: CPU, RAM,
-GPU, network and battery (plus disk if you want it). Small, translucent, and it
-needs no elevated privileges.
+<h1 align="center">Flash Stats</h1>
 
-Built with Tauri 2 (Rust backend) + React 19 (frontend). No sudo, no root
-helper, no launch daemon.
+<p align="center">
+  A system monitor that lives on your macOS desktop like a widget.<br>
+  CPU, memory, GPU, network, temperatures and battery — no sudo, no daemon,
+  and a 2.2&nbsp;MB download.
+</p>
 
-## What it looks like
+<p align="center">
+  <a href="https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg"><b>Download for Apple&nbsp;Silicon</b></a>
+  &nbsp;·&nbsp;
+  <a href="#install">Install</a>
+  &nbsp;·&nbsp;
+  <a href="#where-the-numbers-come-from-no-root">How it reads the hardware</a>
+</p>
 
-<img src="docs/screenshots/desktop.jpg" width="380" alt="The widget on the desktop, showing CPU, GPU, memory, network and temperatures">
+<p align="center">
+  <img src="docs/screenshots/desktop.jpg" width="420" alt="The widget on the desktop showing CPU, GPU, memory, network and temperatures">
+</p>
 
-It sits on the desktop at the level of the icons — above the wallpaper, below
-your windows, next to the system's own widgets. "Show desktop" leaves it where
-it is, and Mission Control moves it along with the desktop rather than
-stranding it.
+<p align="center">
+  <i>It sits at the level of the desktop icons — above the wallpaper, below your
+  windows, beside the system's own widgets. "Show desktop" leaves it where it
+  is, and Mission Control moves it along with the desktop rather than stranding
+  it.</i>
+</p>
 
-<img src="docs/screenshots/menubar.png" width="300" alt="The network meter in the menu bar, download above upload">
+<p align="center">
+  <img src="docs/screenshots/menubar.png" width="330" alt="The network meter in the menu bar, download above upload">
+</p>
 
-Download and upload stacked next to the clock, half the width of a
-side-by-side readout. Clicking it opens a network panel; the widget itself is
-toggled from the right-click menu, never by this.
+<p align="center">
+  <i>Download and upload stacked next to the clock, half the width of a
+  side-by-side readout. Clicking it opens a network panel; the widget itself is
+  toggled from the right-click menu, never by this.</i>
+</p>
 
-<img src="docs/screenshots/card-open.jpg" width="380" alt="The CPU card expanded, showing the user and system split and the busiest processes">
+<p align="center">
+  <img src="docs/screenshots/card-open.jpg" width="380" alt="The CPU card expanded, showing the user and system split and the busiest processes">
+</p>
 
-Every card opens for detail. CPU splits the load into user and system, says
-which cluster is carrying it and which processes are responsible. Memory and
-network do the same for what they measure.
+<p align="center">
+  <i>Every card opens for detail. CPU splits the load into user and system, says
+  which cluster is carrying it, and names the processes responsible. Memory and
+  network do the same for what they measure.</i>
+</p>
 
-<img src="docs/screenshots/settings.jpg" width="460" alt="The settings window, menu bar pane">
+<p align="center">
+  <img src="docs/screenshots/settings.jpg" width="460" alt="The settings window, menu bar pane">
+</p>
+
+<p align="center">
+  <i>Settings for what is worth choosing: which cards, where the widget sits,
+  how often the sensors are read, °C or °F, and whether the one outbound request
+  this app makes happens at all.</i>
+</p>
+
+Built with Tauri 2 (Rust) and React 19. No sudo, no root helper, no launch
+daemon.
+
+<a id="install"></a>
 
 ## Install
 
