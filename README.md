@@ -9,25 +9,26 @@ helper, no launch daemon.
 
 ## What it looks like
 
-<img src="docs/screenshots/desktop.png" width="420" alt="The widget in the top right corner of the desktop">
+<img src="docs/screenshots/desktop.jpg" width="380" alt="The widget on the desktop, showing CPU, GPU, memory, network and temperatures">
 
-It sits on the desktop, at the level of the icons — above the wallpaper, below
-your windows. "Show desktop" leaves it where it is, and Mission Control moves
-it along with the desktop instead of stranding it.
+It sits on the desktop at the level of the icons — above the wallpaper, below
+your windows, next to the system's own widgets. "Show desktop" leaves it where
+it is, and Mission Control moves it along with the desktop rather than
+stranding it.
 
-<img src="docs/screenshots/menubar.png" width="260" alt="The network meter in the menu bar">
+<img src="docs/screenshots/menubar.png" width="300" alt="The network meter in the menu bar, download above upload">
 
-Download and upload stacked in the menu bar, half the width of a side-by-side
-readout. Click it for the network panel below; the widget is toggled from the
-right-click menu, not by this.
+Download and upload stacked next to the clock, half the width of a
+side-by-side readout. Clicking it opens a network panel; the widget itself is
+toggled from the right-click menu, never by this.
 
-<img src="docs/screenshots/card-open.png" width="420" alt="The network card expanded">
+<img src="docs/screenshots/card-open.jpg" width="380" alt="The CPU card expanded, showing the user and system split and the busiest processes">
 
-Every card opens for detail. Network shows the link, both addresses — click
-either to copy — and which processes are using the connection.
+Every card opens for detail. CPU splits the load into user and system, says
+which cluster is carrying it and which processes are responsible. Memory and
+network do the same for what they measure.
 
-<img src="docs/screenshots/panel.png" width="320" alt="The network panel under the menu bar">
-<img src="docs/screenshots/settings.png" width="420" alt="The settings window">
+<img src="docs/screenshots/settings.jpg" width="460" alt="The settings window, menu bar pane">
 
 ## Install
 
