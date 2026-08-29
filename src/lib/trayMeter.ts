@@ -1,4 +1,4 @@
-import { inTauri } from "./telemetry";
+import { inTauri, logLine } from "./telemetry";
 
 /**
  * The menu-bar meter is drawn by us, not by AppKit: a canvas → PNG → tray icon
@@ -136,7 +136,7 @@ export async function pushTrayMeter(down: number, up: number, style: Style) {
   try {
     rendered = renderMeter(down, up, style);
   } catch (error) {
-    console.error("tray meter render failed", error);
+    void logLine("error", `tray meter render failed: ${error}`);
     return;
   }
   const signature = `${rendered.text}|${style.colored ? "c" : "t"}|${
@@ -156,6 +156,9 @@ export async function pushTrayMeter(down: number, up: number, style: Style) {
       },
     });
   } catch (error) {
-    console.error("set_tray_image failed", error);
+    // Into the terminal, not just the webview console: when this fails the tray
+    // silently falls back to a plain text title, which looks like a styling bug
+    // rather than a broken IPC call.
+    void logLine("error", `set_tray_image failed: ${error}`);
   }
 }

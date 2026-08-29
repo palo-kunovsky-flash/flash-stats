@@ -7,6 +7,28 @@ needs no elevated privileges.
 Built with Tauri 2 (Rust backend) + React 19 (frontend). No sudo, no root
 helper, no launch daemon.
 
+## What it looks like
+
+<img src="docs/screenshots/desktop.png" width="420" alt="The widget in the top right corner of the desktop">
+
+It sits on the desktop, at the level of the icons — above the wallpaper, below
+your windows. "Show desktop" leaves it where it is, and Mission Control moves
+it along with the desktop instead of stranding it.
+
+<img src="docs/screenshots/menubar.png" width="260" alt="The network meter in the menu bar">
+
+Download and upload stacked in the menu bar, half the width of a side-by-side
+readout. Click it for the network panel below; the widget is toggled from the
+right-click menu, not by this.
+
+<img src="docs/screenshots/card-open.png" width="420" alt="The network card expanded">
+
+Every card opens for detail. Network shows the link, both addresses — click
+either to copy — and which processes are using the connection.
+
+<img src="docs/screenshots/panel.png" width="320" alt="The network panel under the menu bar">
+<img src="docs/screenshots/settings.png" width="420" alt="The settings window">
+
 ## Install
 
 [**Download Flash Stats**](https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg)
