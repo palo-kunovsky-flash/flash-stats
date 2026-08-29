@@ -147,32 +147,40 @@ else
 fi
 git push origin "${TAG}"
 
-step "Uploading to the package registry"
-# The generic registry is what gives a release asset a stable URL; attaching a
-# file to a release directly produces a one-off path that changes every time.
-api_put_file "projects/${PROJECT}/packages/generic/flash-stats/${VERSION}/${ASSET}" "${DMG}"
-echo "uploaded"
-
-step "Creating the release"
-# `direct_asset_path` is the point of this: it is what makes
-# /-/releases/vX.Y.Z/downloads/<name> resolve, which is the URL the cask uses.
-# Without it GitLab hands out a path that changes on every upload.
+step "Publishing"
+# Order matters and neither half is obvious:
 #
-# The path deliberately carries no version, so that
+# `glab api --method PUT --input` handles a few kilobytes and then fails a
+# 2 MB one with "tls: bad record MAC", so the upload goes through
+# `glab release upload`, which needs the release to exist first.
+#
+# That command then names the asset path after the file, version and all,
+# which breaks the whole point of the permalink. So the link it creates is
+# swapped for one whose `direct_asset_path` carries no version, leaving
 #   /-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg
-# is a link that can be handed to anyone once and keeps working forever. The
-# file in the registry keeps its versioned name; only this alias is stable.
-LINKS="$(cat <<JSON
-[{"name": "${ASSET} (${SIZE})",
-  "url": "https://gitlab.com/api/v4/projects/${PROJECT}/packages/generic/flash-stats/${VERSION}/${ASSET}",
-  "direct_asset_path": "/flash-stats-aarch64.dmg",
-  "link_type": "package"}]
-JSON
-)"
+# valid forever.
 NOTES="Apple Silicon build, ${SIZE} download.
 
 First launch needs one **Open Anyway** in System Settings → Privacy & Security; see the README for why."
-api_create_release "${TAG}" "Flash Stats ${VERSION}" "${NOTES}" "${LINKS}"
+
+glab release create "${TAG}" --name "Flash Stats ${VERSION}" --notes "${NOTES}" > /dev/null
+glab release upload "${TAG}" "${DMG}" --use-package-registry --package-name flash-stats > /dev/null
+
+LINKS_JSON="$(glab api "projects/${PROJECT}/releases/${TAG}/assets/links")"
+OLD_ID="$(printf '%s' "${LINKS_JSON}" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')"
+ASSET_URL="$(printf '%s' "${LINKS_JSON}" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["url"])')"
+glab api --method DELETE "projects/${PROJECT}/releases/${TAG}/assets/links/${OLD_ID}" > /dev/null
+glab api --method POST "projects/${PROJECT}/releases/${TAG}/assets/links" \
+  -f "name=flash-stats-aarch64.dmg (${SIZE})" \
+  -f "url=${ASSET_URL}" \
+  -f "direct_asset_path=/flash-stats-aarch64.dmg" \
+  -f "link_type=package" > /dev/null
+
+step "Checking the published link"
+PERMALINK="https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg"
+CODE="$(curl -s -o /dev/null -w '%{http_code}' -L "${PERMALINK}")"
+[ "${CODE}" = "200" ] || { echo "the permalink answers ${CODE}, not 200" >&2; exit 1; }
+echo "200"
 echo "released"
 
 cat <<SUMMARY
@@ -180,7 +188,7 @@ cat <<SUMMARY
 $(printf '\033[1;32m==>\033[0m') Done — ${TAG}
 
   This release   https://gitlab.com/palo.kunovsky/flash-stats/-/releases/${TAG}/downloads/flash-stats-aarch64.dmg
-  Always latest  https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg
+  Always latest  ${PERMALINK}
   Size           ${SIZE}
 
 Update the tap (Casks/flash-stats.rb):
