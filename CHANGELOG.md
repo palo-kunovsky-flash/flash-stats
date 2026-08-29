@@ -2,6 +2,17 @@
 
 Notable changes per release. Dates are the day the build was published.
 
+## 0.1.2 — 2026-08-29
+
+### Fixed
+
+- **The About pane reported the wrong version.** The number shown in the app
+  came from the crate version while the bundle took its own from the Tauri
+  config, and 0.1.1 shipped with only the latter bumped — so it installed as
+  0.1.1 and called itself 0.1.0. There is now one place that carries the
+  version, `src-tauri/Cargo.toml`; Tauri falls back to it when the config has
+  no `version` field, and that is the same number the binary is compiled with.
+
 ## 0.1.1 — 2026-08-29
 
 ### Fixed

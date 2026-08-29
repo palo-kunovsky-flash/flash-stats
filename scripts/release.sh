@@ -91,7 +91,14 @@ JSON
   esac
 }
 
-VERSION="$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
+# One place, and it is the crate: `version` is deliberately absent from
+# tauri.conf.json and package.json, so Tauri falls back to Cargo.toml — the
+# same number `env!("CARGO_PKG_VERSION")` bakes into the binary and the app
+# shows in its About pane. 0.1.1 shipped saying it was 0.1.0 because those two
+# were separate fields and one was forgotten.
+VERSION="$(grep -m1 '^version = ' src-tauri/Cargo.toml | cut -d'"' -f2)"
+[ -n "${VERSION}" ] || { echo "no version in src-tauri/Cargo.toml"; exit 1; }
+
 TAG="v${VERSION}"
 # A stable, predictable file name. Tauri's own has a space and an underscore in
 # it, which makes for ugly URLs and a cask that has to escape them.

@@ -223,3 +223,7 @@ FLASH_STATS_DEBUG=1 FLASH_STATS_SELFTEST=1 FLASH_STATS_SETTINGS=1 npm run tauri:
 - [ ] Multiple disks, SMART where available
 - [ ] An Intel build, or a universal one
 - [ ] Linux / Windows backends (sysfs + hwmon, PDH + WMI)
+
+## License
+
+MIT — see [LICENSE](LICENSE). Do what you like with it; there is no warranty.

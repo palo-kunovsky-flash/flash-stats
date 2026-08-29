@@ -1,7 +1,6 @@
 {
   "name": "flash-stats",
   "private": true,
-  "version": "0.1.1",
   "type": "module",
   "description": "macOS system monitor widgets (CPU / GPU / RAM / Battery / Network) with a menu-bar net meter.",
   "scripts": {
@@ -29,5 +28,11 @@
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "^5.9.0",
     "vite": "^6.0.0"
+  },
+  "license": "MIT",
+  "author": "Palo Kunovsk\u00fd <palo.kunovsky@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/palo.kunovsky/flash-stats.git"
   }
 }

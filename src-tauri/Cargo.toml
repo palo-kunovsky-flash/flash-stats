@@ -1,11 +1,13 @@
 [package]
 name = "flash-stats"
-version = "0.1.0"
+version = "0.1.2"
 description = "macOS system monitor widgets with a menu-bar network meter"
 authors = ["Palo Kunovsky <palo.kunovsky@gmail.com>"]
 edition = "2021"
 default-run = "flash-stats"
 rust-version = "1.85"
+license = "MIT"
+repository = "https://gitlab.com/palo.kunovsky/flash-stats"
 
 [lib]
 name = "flash_stats_lib"
