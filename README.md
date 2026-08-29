@@ -68,6 +68,9 @@ daemon.
 
 ## Install
 
+**Requires an Apple Silicon Mac on macOS 12 or later.** There is no Intel
+build; see the roadmap.
+
 [**Download Flash Stats**](https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg)
 — 2.2 MB — then drag it to Applications. Older versions are on the
 [releases page](https://gitlab.com/palo.kunovsky/flash-stats/-/releases).
@@ -100,44 +103,14 @@ first launch asks for Location Services. Nothing else uses it, no position is
 ever read, and declining only means the network card shows "Wi-Fi" instead of
 the network's name.
 
-## Building it yourself
+### Uninstalling
+
+Drag the app to the Trash, or `brew uninstall --cask flash-stats`. Two files
+are left behind and can go with it:
 
 ```sh
-npm install
-npm run release      # signed .app + .dmg in src-tauri/target/release/bundle
-```
-
-`npm run release` is `tauri build` with `APPLE_SIGNING_IDENTITY=-`, which
-ad-hoc signs the bundle before the disk image is built. Without it the bundle
-ends up with a broken seal and macOS reports the app as *damaged* rather than
-merely unverified — a much worse first impression, and a much longer detour for
-whoever downloaded it.
-
-## Self test
-
-No clicking needed — `FLASH_STATS_SELFTEST=1` drives the window plumbing from
-inside the app and prints PASS/FAIL before quitting: the preferences window may
-only hide when closed (the tray app must survive), the widget has to be put back
-after the system sweeps it away, and the menu bar item must stay registered.
-
-```bash
-FLASH_STATS_DEBUG=1 FLASH_STATS_SELFTEST=1 FLASH_STATS_SETTINGS=1 npm run tauri:dev
-```
-
-## Run
-
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-npm install
-npm run tauri:dev      # development
-npm run tauri:build    # bundle Flash Stats.app
-```
-
-Quick data probe without the GUI (prints one snapshot as JSON):
-
-```bash
-PROBE_ROUNDS=1 cargo run --manifest-path src-tauri/Cargo.toml --bin probe
-FLASH_STATS_DEBUG=1    # verbose stderr: tick timings, sampler phases, UI logs
+rm -rf ~/Library/Application\ Support/com.kunovsky.flashstats
+rm -f  ~/Library/Preferences/com.kunovsky.flashstats.plist
 ```
 
 ## Positioning
@@ -154,43 +127,27 @@ action: it shows the widget, orders it to the front of the desktop layer and put
 on its slot on the display with the menu bar. Use it when the bar ends up behind the
 system widgets or on a display that is switched off.
 
-## Design notes
-
-- **No scrolling.** The window height is measured from the rendered content
-  (header bar + visible cards) and resized to fit; width is a preset
-  (280/320/360/420 px) and the position is remembered.
-- **Desktop level** (default): the window sits under normal windows but above
-  the wallpaper, joins all Spaces, survives "Show Desktop", and never appears
-  in the Dock or Cmd+Tab. Settings can switch it to "above windows" or plain
-  window behaviour.
-- **Translucency** comes from `windowEffects: hudWindow` plus
-  `macOSPrivateApi`, so the desktop shows through instead of a flat fill.
-- **Preferences window.** Settings live in their own window (`index.html?view=settings`)
-  with native sidebar vibrancy, an EN/SK interface and the same glass styling as
-  the widget. Closing it hides it; the app keeps running from the menu bar.
-- **Menu bar meter.** The network meter is drawn in the frontend canvas (SF
-  Mono, fixed-width fields, vector arrows) and pushed to the `NSStatusItem` as
-  a PNG. Settings toggle between template (adapts to light/dark menu bar) and
-  coloured mode; the full readout stays in the tooltip.
-- **Shortcut.** ⌥⌘S shows/hides the widget (with fallbacks when the combo is
-  already taken by another app).
-
 ## Where the numbers come from (no root)
 
 | Metric | Source |
 | --- | --- |
 | CPU load, per-core load, P/E cores, frequency | `sysinfo` (host_processor_info) + `hw.cpufrequency`, `hw.perflevel*` |
+| CPU user / system split | `host_statistics` (`HOST_CPU_LOAD_INFO` tick counters) |
 | Temperatures | IOHID thermal sensors via `sysinfo::Components`, grouped into CPU / GPU / NAND / battery |
 | GPU load, VRAM, GPU temperature | IOKit `IOAccelerator` → `PerformanceStatistics` (Device/Renderer/Tiler %, `Alloc system memory`) |
 | Battery, power draw, health, cycles, time estimates | IOKit `AppleSmartBattery` (Voltage, InstantAmperage, Temperature, Design/MaxCapacity, CycleCount) |
 | RAM split (App / Wired / Compressed / Cached), swap | `host_statistics64` (`vm_statistics64`) + `xsw_usage` |
-| Network rates, per-interface counters, IPv4 | `sysinfo::Networks` + `getifaddrs` |
+| Network rates, per-interface counters, IPv4 | `sysinfo::Networks` + `getifaddrs`; the active link comes from the default route |
+| Wi-Fi network name | CoreWLAN in-process — the CLI tools answer `<redacted>` to anyone without Location Services access |
+| Per-process network rates | `nettop -P -d -t external`, sampled off the tick thread, only while the card is visible |
+| Public address | one request to `api.ipify.org` every ten minutes, and only if left switched on |
 | Disk throughput and free space | `sysinfo::Disks` (IO counters + statvfs) |
 | Hottest processes | `sysinfo::Processes`, refreshed once every 5 ticks |
 
 Registry reads keep the entry alive and fetch single keys, which cut the GPU +
-battery read from ~30 ms to under 1 ms per tick. The IOHID sensor read (~50 ms)
-runs every third tick because temperature moves slowly.
+battery read from ~30 ms to under 1 ms per tick. The IOHID sensor read (~60 ms)
+runs every sixth tick and the IOKit accelerator registry every other one,
+because neither heat nor GPU load says anything new at 1 Hz.
 
 ## Known limits
 
@@ -202,10 +159,62 @@ runs every third tick because temperature moves slowly.
 - Time-to-full / time-to-empty use the instantaneous power draw, so they bounce
   while the charger negotiates.
 
+## Building it yourself
+
+```sh
+npm install
+npm run release      # signed .app + .dmg in src-tauri/target/release/bundle
+```
+
+`npm run release` is `tauri build` with `APPLE_SIGNING_IDENTITY=-`, which
+ad-hoc signs the bundle before the disk image is built. Without it the bundle
+ends up with a broken seal and macOS reports the app as *damaged* rather than
+merely unverified — a much worse first impression, and a much longer detour for
+whoever downloaded it.
+
+```sh
+npm run tauri:dev      # development
+npm run typecheck
+PROBE_ROUNDS=1 npm run probe    # one snapshot of every sensor, as JSON
+FLASH_STATS_DEBUG=1             # tick timings, sampler phases and UI logs on stderr
+```
+
+## Self test
+
+No clicking needed — `FLASH_STATS_SELFTEST=1` drives the window plumbing from
+inside the app and prints PASS/FAIL before quitting: the preferences window may
+only hide when closed (the tray app must survive), the widget has to be put back
+after the system sweeps it away, and the menu bar item must stay registered.
+
+```bash
+FLASH_STATS_DEBUG=1 FLASH_STATS_SELFTEST=1 FLASH_STATS_SETTINGS=1 npm run tauri:dev
+```
+
+## Design notes
+
+- **Fits its content.** The height is measured from the rendered cards and the
+  window resized to match — capped at the height of the screen, where the card
+  stack scrolls instead of growing past the edge. Width is a preset
+  (360/400/440/480 px) and the position is remembered.
+- **Desktop level** (default): the window sits under normal windows but above
+  the wallpaper, joins all Spaces, survives "Show Desktop", and never appears
+  in the Dock or Cmd+Tab. Settings can switch it to "above windows" or plain
+  window behaviour.
+- **Translucency** comes from `windowEffects: hudWindow` plus
+  `macOSPrivateApi`, so the desktop shows through instead of a flat fill.
+- **Preferences window.** Settings live in their own window (`index.html?view=settings`)
+  with native sidebar vibrancy, an EN/SK interface and the same glass styling as
+  the widget. Closing it hides it; the app keeps running from the menu bar.
+- **Menu bar meter.** Drawn in a canvas (SF Mono, fixed-width fields, vector
+  arrows) and handed to the `NSStatusItem` as a raw pixel buffer over a binary
+  IPC body — no PNG encoded in JavaScript, no base64, once a second. Settings
+  toggle between template (adapts to a light or dark menu bar) and coloured.
+- **Shortcut.** ⌥⌘S shows/hides the widget (with fallbacks when the combo is
+  already taken by another app).
+
 ## Roadmap
 
-- [ ] Detail panels per subsystem (click a card for the full table)
 - [ ] Calibration for the battery time estimates
 - [ ] Multiple disks, SMART where available
+- [ ] An Intel build, or a universal one
 - [ ] Linux / Windows backends (sysfs + hwmon, PDH + WMI)
-- [ ] UI language switch (the interface is currently Slovak)
