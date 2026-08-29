@@ -9,8 +9,16 @@ helper, no launch daemon.
 
 ## Install
 
-Grab the `.dmg` from the [releases page](https://gitlab.com/palo.kunovsky/flash-stats/-/releases)
-and drag Flash Stats to Applications. It is a 2.2 MB download.
+[**Download Flash Stats**](https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg)
+— 2.2 MB — then drag it to Applications. Older versions are on the
+[releases page](https://gitlab.com/palo.kunovsky/flash-stats/-/releases).
+
+Or with Homebrew:
+
+```sh
+brew tap palo.kunovsky/flash-stats https://gitlab.com/palo.kunovsky/homebrew-flash-stats.git
+brew install --cask --no-quarantine flash-stats
+```
 
 **The first launch needs one extra step.** The app is signed, but with an
 ad-hoc signature rather than an Apple Developer ID, because that certificate

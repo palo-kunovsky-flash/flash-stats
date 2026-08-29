@@ -157,10 +157,15 @@ step "Creating the release"
 # `direct_asset_path` is the point of this: it is what makes
 # /-/releases/vX.Y.Z/downloads/<name> resolve, which is the URL the cask uses.
 # Without it GitLab hands out a path that changes on every upload.
+#
+# The path deliberately carries no version, so that
+#   /-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg
+# is a link that can be handed to anyone once and keeps working forever. The
+# file in the registry keeps its versioned name; only this alias is stable.
 LINKS="$(cat <<JSON
 [{"name": "${ASSET} (${SIZE})",
   "url": "https://gitlab.com/api/v4/projects/${PROJECT}/packages/generic/flash-stats/${VERSION}/${ASSET}",
-  "direct_asset_path": "/${ASSET}",
+  "direct_asset_path": "/flash-stats-aarch64.dmg",
   "link_type": "package"}]
 JSON
 )"
@@ -174,8 +179,9 @@ cat <<SUMMARY
 
 $(printf '\033[1;32m==>\033[0m') Done — ${TAG}
 
-  Download   https://gitlab.com/palo.kunovsky/flash-stats/-/releases/${TAG}/downloads/${ASSET}
-  Size       ${SIZE}
+  This release   https://gitlab.com/palo.kunovsky/flash-stats/-/releases/${TAG}/downloads/flash-stats-aarch64.dmg
+  Always latest  https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg
+  Size           ${SIZE}
 
 Update the tap (Casks/flash-stats.rb):
 
