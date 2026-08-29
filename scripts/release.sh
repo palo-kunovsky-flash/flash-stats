@@ -25,14 +25,38 @@ command -v cargo >/dev/null || { echo "cargo not found; install Rust first"; exi
 PROJECT="palo.kunovsky%2Fflash-stats"   # URL-encoded path, as the API wants it
 API="https://gitlab.com/api/v4/projects/${PROJECT}"
 
-# Prefer whatever `glab auth login` already stored, so the token never has to
-# be pasted into a shell command (where it would end up in the history) or kept
-# in the environment.
+step() { printf '\n\033[1;36m==>\033[0m %s\n' "$1"; }
+
+
+# Prefer whatever `glab auth login` already stored, so the token never has to be
+# pasted into a shell command (where it would end up in the history) or kept in
+# the environment. `glab auth token` exits 0 and prints a notice when it has
+# nothing, so the answer is only believed if it looks like a token.
 if [ -z "${GITLAB_TOKEN:-}" ] && command -v glab >/dev/null; then
-  GITLAB_TOKEN="$(glab auth token 2>/dev/null || true)"
+  candidate="$(glab auth token 2>/dev/null | tr -d '[:space:]' || true)"
+  case "${candidate}" in
+    ?????????????????*) GITLAB_TOKEN="${candidate}" ;;
+  esac
 fi
+
 if [ "${DRY_RUN}" = false ]; then
-  : "${GITLAB_TOKEN:?no credentials: run `glab auth login`, or set GITLAB_TOKEN (scope: api). Use --dry-run to build without publishing}"
+  if [ -z "${GITLAB_TOKEN:-}" ]; then
+    echo "no credentials. Run 'glab auth login', or set GITLAB_TOKEN (scope: api)." >&2
+    echo "'--dry-run' builds and checksums without publishing anything." >&2
+    exit 1
+  fi
+  # Proven before anything is built, tagged or pushed. An SSH key authenticates
+  # git but not the API, so a half-run used to get as far as pushing a tag and
+  # then fail on the first upload, leaving a tag behind for a release that
+  # never happened.
+  step "Checking credentials"
+  if ! curl --fail --silent --output /dev/null \
+      --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" "${API}"; then
+    echo "the token was rejected by ${API}" >&2
+    echo "it needs the 'api' scope; 'glab auth login' sets that up." >&2
+    exit 1
+  fi
+  echo "accepted"
 fi
 
 VERSION="$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
@@ -41,7 +65,6 @@ TAG="v${VERSION}"
 # it, which makes for ugly URLs and a cask that has to escape them.
 ASSET="flash-stats-${VERSION}-aarch64.dmg"
 
-step() { printf '\n\033[1;36m==>\033[0m %s\n' "$1"; }
 
 step "Building ${TAG}"
 # Ad-hoc signing, applied before the disk image is assembled so the app inside
