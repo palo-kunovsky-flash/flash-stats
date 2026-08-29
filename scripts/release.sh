@@ -25,8 +25,14 @@ command -v cargo >/dev/null || { echo "cargo not found; install Rust first"; exi
 PROJECT="palo.kunovsky%2Fflash-stats"   # URL-encoded path, as the API wants it
 API="https://gitlab.com/api/v4/projects/${PROJECT}"
 
+# Prefer whatever `glab auth login` already stored, so the token never has to
+# be pasted into a shell command (where it would end up in the history) or kept
+# in the environment.
+if [ -z "${GITLAB_TOKEN:-}" ] && command -v glab >/dev/null; then
+  GITLAB_TOKEN="$(glab auth token 2>/dev/null || true)"
+fi
 if [ "${DRY_RUN}" = false ]; then
-  : "${GITLAB_TOKEN:?set GITLAB_TOKEN (GitLab → Settings → Access Tokens, scope: api), or pass --dry-run}"
+  : "${GITLAB_TOKEN:?no credentials: run `glab auth login`, or set GITLAB_TOKEN (scope: api). Use --dry-run to build without publishing}"
 fi
 
 VERSION="$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
