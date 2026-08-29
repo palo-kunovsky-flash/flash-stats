@@ -16,6 +16,8 @@
   <a href="#install">Install</a>
   &nbsp;·&nbsp;
   <a href="#where-the-numbers-come-from-no-root">How it reads the hardware</a>
+  &nbsp;·&nbsp;
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
