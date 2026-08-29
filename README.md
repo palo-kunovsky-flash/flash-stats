@@ -5,9 +5,14 @@
 <h1 align="center">Flash Stats</h1>
 
 <p align="center">
-  A system monitor that lives on your macOS desktop like a widget.<br>
-  CPU, memory, GPU, network, temperatures and battery — no sudo, no daemon,
-  and a 2.2&nbsp;MB download.
+  <b>A system monitor that lives on your macOS desktop like a widget.</b><br>
+  CPU, memory, GPU, network, temperatures and battery.
+</p>
+
+<p align="center">
+  <b>2.2&nbsp;MB</b> to download &nbsp;·&nbsp;
+  no sudo, no daemon, no login item &nbsp;·&nbsp;
+  one outbound request, with a switch to stop it
 </p>
 
 <p align="center">
