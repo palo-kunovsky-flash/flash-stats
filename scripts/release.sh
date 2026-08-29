@@ -4,18 +4,30 @@
 # and prints the cask stanza that the Homebrew tap needs.
 #
 #   GITLAB_TOKEN=glpat-... ./scripts/release.sh
+#   ./scripts/release.sh --dry-run     # everything except publishing
 #
 # The token needs the `api` scope and comes from
-# GitLab → Settings → Access Tokens. Nothing else is required; there is no
-# Apple Developer ID involved, see README.
+# GitLab → Settings → Access Tokens. An SSH key is not enough: it authenticates
+# git, not the REST API, which is what creates releases. Nothing else is
+# required; there is no Apple Developer ID involved, see README.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+DRY_RUN=false
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=true
+
+# A non-interactive shell (a hook, CI, another script) does not read the shell
+# profile that normally puts cargo on the PATH.
+command -v cargo >/dev/null || PATH="${HOME}/.cargo/bin:${PATH}"
+command -v cargo >/dev/null || { echo "cargo not found; install Rust first"; exit 1; }
+
 PROJECT="palo.kunovsky%2Fflash-stats"   # URL-encoded path, as the API wants it
 API="https://gitlab.com/api/v4/projects/${PROJECT}"
 
-: "${GITLAB_TOKEN:?set GITLAB_TOKEN (GitLab → Settings → Access Tokens, scope: api)}"
+if [ "${DRY_RUN}" = false ]; then
+  : "${GITLAB_TOKEN:?set GITLAB_TOKEN (GitLab → Settings → Access Tokens, scope: api), or pass --dry-run}"
+fi
 
 VERSION="$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")"
 TAG="v${VERSION}"
@@ -46,6 +58,25 @@ DMG="${BUNDLE}/dmg/${ASSET}"
 SHA="$(shasum -a 256 "${DMG}" | cut -d' ' -f1)"
 SIZE="$(du -h "${DMG}" | cut -f1 | tr -d ' ')"
 echo "${ASSET}  ${SIZE}  ${SHA}"
+
+if [ "${DRY_RUN}" = true ]; then
+  cat <<DRY
+
+$(printf '\033[1;33m==>\033[0m') Dry run — nothing was published
+
+  Would tag        ${TAG}
+  Would upload     ${API}/packages/generic/flash-stats/${VERSION}/${ASSET}
+  Would release    ${TAG}
+  Download URL     https://gitlab.com/palo.kunovsky/flash-stats/-/releases/${TAG}/downloads/${ASSET}
+
+  Cask values:
+      version "${VERSION}"
+      sha256 "${SHA}"
+
+Run without --dry-run, with GITLAB_TOKEN set, to publish.
+DRY
+  exit 0
+fi
 
 step "Tagging"
 if git rev-parse "${TAG}" >/dev/null 2>&1; then
