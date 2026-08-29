@@ -7,6 +7,45 @@ needs no elevated privileges.
 Built with Tauri 2 (Rust backend) + React 19 (frontend). No sudo, no root
 helper, no launch daemon.
 
+## Install
+
+Grab the `.dmg` from the [releases page](https://gitlab.com/palo.kunovsky/flash-stats/-/releases)
+and drag Flash Stats to Applications. It is a 2.2 MB download.
+
+**The first launch needs one extra step.** The app is signed, but with an
+ad-hoc signature rather than an Apple Developer ID, because that certificate
+costs $99 a year and this is a free tool. macOS therefore cannot check it
+against Apple and refuses the first launch:
+
+1. Double-click Flash Stats. macOS says it cannot verify the developer.
+2. Open **System Settings → Privacy & Security**, scroll down, and press
+   **Open Anyway** next to the message about Flash Stats.
+3. Confirm. macOS remembers the decision; later launches are ordinary
+   double-clicks.
+
+Flash Stats has no Dock icon — it is a menu bar app. Look for the network
+meter next to the clock.
+
+### Wi-Fi network name
+
+macOS treats the name of the network you are joined to as location data, so the
+first launch asks for Location Services. Nothing else uses it, no position is
+ever read, and declining only means the network card shows "Wi-Fi" instead of
+the network's name.
+
+## Building it yourself
+
+```sh
+npm install
+npm run release      # signed .app + .dmg in src-tauri/target/release/bundle
+```
+
+`npm run release` is `tauri build` with `APPLE_SIGNING_IDENTITY=-`, which
+ad-hoc signs the bundle before the disk image is built. Without it the bundle
+ends up with a broken seal and macOS reports the app as *damaged* rather than
+merely unverified — a much worse first impression, and a much longer detour for
+whoever downloaded it.
+
 ## Self test
 
 No clicking needed — `FLASH_STATS_SELFTEST=1` drives the window plumbing from

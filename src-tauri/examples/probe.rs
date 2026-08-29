@@ -1,5 +1,9 @@
-//! CLI probe: `cargo run --bin probe` — dumps everything the sensors can see.
+//! CLI probe: `npm run probe` — dumps everything the sensors can see.
 //! Handy for checking that the IOKit / SMC reads work on a new machine.
+//!
+//! An example rather than a binary: `cargo build --release` leaves examples
+//! alone, so this development tool no longer rides along inside the shipped
+//! app bundle, where it was 546 KB of a 5.4 MB download.
 
 use std::time::Duration;
 
