@@ -1,7 +1,7 @@
 {
   "name": "flash-stats",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "macOS system monitor widgets (CPU / GPU / RAM / Battery / Network) with a menu-bar net meter.",
   "scripts": {
