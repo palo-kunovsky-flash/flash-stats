@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg"><b>Download for Apple&nbsp;Silicon</b></a>
+  <a href="#install"><b>Install</b></a>
   &nbsp;·&nbsp;
-  <a href="#install">Install</a>
+  <a href="https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg">Download the&nbsp;.dmg</a>
   &nbsp;·&nbsp;
   <a href="#where-the-numbers-come-from-no-root">How it reads the hardware</a>
   &nbsp;·&nbsp;
@@ -76,40 +76,55 @@ daemon.
 **Requires an Apple Silicon Mac on macOS 12 or later.** There is no Intel
 build; see the roadmap.
 
-[**Download Flash Stats**](https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg)
-— 2.2 MB — then drag it to Applications. Older versions are on the
-[releases page](https://gitlab.com/palo.kunovsky/flash-stats/-/releases).
-
-Or with Homebrew:
+### With Homebrew (recommended)
 
 ```sh
 brew tap palo.kunovsky/flash-stats https://gitlab.com/palo.kunovsky/homebrew-flash-stats.git
 brew install --cask --no-quarantine flash-stats
 ```
 
-**The first launch needs one extra step.** The app is signed, but with an
-ad-hoc signature rather than an Apple Developer ID, and it is not notarized —
-that certificate costs $99 a year and this is a free tool. Apple's own
-`syspolicy_check` calls the missing notarization ticket *fatal for
-distribution*, so macOS refuses to open the app as downloaded. Clear the
-quarantine flag it was tagged with:
+Two commands, and it is the only route that leaves nothing for you to fix
+afterwards — see below for why `--no-quarantine` is there. Updates are
+`brew upgrade --cask flash-stats`.
+
+### Or the disk image
+
+[**Download Flash Stats**](https://gitlab.com/palo.kunovsky/flash-stats/-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg)
+— 2.2 MB — drag it to Applications, then run one command:
 
 ```sh
 xattr -d com.apple.quarantine "/Applications/Flash Stats.app"
 ```
 
-That is one command and it always works. It is also exactly what
-`brew install --cask --no-quarantine` does for you, which is why the Homebrew
-line above carries that flag.
+Older versions are on the
+[releases page](https://gitlab.com/palo.kunovsky/flash-stats/-/releases).
 
-You may also get there through **System Settings → Privacy & Security →
-Open Anyway**, which appears for a while after a blocked launch. That route is
-worth knowing but is not dependable: macOS 15 removed the older right-click →
-Open bypass, and the button is not always offered for an app with no Developer
-ID at all.
+### Why that command is necessary
 
-Either way it is a one-time decision — macOS remembers it, and updates through
-Homebrew do not ask again.
+The app is signed, but with an ad-hoc signature rather than an Apple Developer
+ID, and it is not notarized — that certificate costs $99 a year and this is a
+free tool. Apple's own `syspolicy_check` is blunt about the consequence:
+
+```
+Adhoc Signed App        Severity: Warning
+Notary Ticket Missing   Severity: Fatal
+```
+
+So macOS will not open the app while the quarantine flag a browser attaches to
+downloads is still on it. Clearing that flag is the whole of the workaround,
+and it is exactly what `--no-quarantine` does for the Homebrew route.
+
+**System Settings → Privacy & Security → Open Anyway** sometimes offers a way
+through after a blocked launch, and it is worth a look — but do not count on
+it. macOS 15 removed the older right-click → Open bypass, and the button is not
+reliably offered to an app carrying no Developer ID at all.
+
+Either way it is a one-time decision. macOS remembers it, and Homebrew upgrades
+never ask again.
+
+If handing someone a terminal command is not something you want to do, the
+honest fix is the $99 Developer ID and notarization — nothing short of it makes
+macOS open this app on a double-click.
 
 Flash Stats has no Dock icon — it is a menu bar app. Look for the network
 meter next to the clock.
