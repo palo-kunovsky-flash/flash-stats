@@ -88,15 +88,28 @@ brew install --cask --no-quarantine flash-stats
 ```
 
 **The first launch needs one extra step.** The app is signed, but with an
-ad-hoc signature rather than an Apple Developer ID, because that certificate
-costs $99 a year and this is a free tool. macOS therefore cannot check it
-against Apple and refuses the first launch:
+ad-hoc signature rather than an Apple Developer ID, and it is not notarized —
+that certificate costs $99 a year and this is a free tool. Apple's own
+`syspolicy_check` calls the missing notarization ticket *fatal for
+distribution*, so macOS refuses to open the app as downloaded. Clear the
+quarantine flag it was tagged with:
 
-1. Double-click Flash Stats. macOS says it cannot verify the developer.
-2. Open **System Settings → Privacy & Security**, scroll down, and press
-   **Open Anyway** next to the message about Flash Stats.
-3. Confirm. macOS remembers the decision; later launches are ordinary
-   double-clicks.
+```sh
+xattr -d com.apple.quarantine "/Applications/Flash Stats.app"
+```
+
+That is one command and it always works. It is also exactly what
+`brew install --cask --no-quarantine` does for you, which is why the Homebrew
+line above carries that flag.
+
+You may also get there through **System Settings → Privacy & Security →
+Open Anyway**, which appears for a while after a blocked launch. That route is
+worth knowing but is not dependable: macOS 15 removed the older right-click →
+Open bypass, and the button is not always offered for an app with no Developer
+ID at all.
+
+Either way it is a one-time decision — macOS remembers it, and updates through
+Homebrew do not ask again.
 
 Flash Stats has no Dock icon — it is a menu bar app. Look for the network
 meter next to the clock.
