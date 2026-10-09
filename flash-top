@@ -442,8 +442,12 @@ class Ring:
 
 
 def chart(rings, w, h, fmtf, rgbs, labels=None, axis_row=True):
-    """One chart for one or two series, with a ceiling, a legend and a
-    time axis. Two series share a ceiling so they stay comparable.
+    """One chart for one or two series, with a ceiling and a time axis.
+
+    Each series is named in the label column, in its own colour — two series
+    are drawn as two blocks one above the other, and a swatch legend off to
+    the side never said which block was which. Both share a ceiling so they
+    stay comparable.
 
     Without `axis_row` the span moves up onto the ceiling line, which costs a
     reader nothing and saves a line in every panel.
@@ -453,23 +457,24 @@ def chart(rings, w, h, fmtf, rgbs, labels=None, axis_row=True):
     n = max(1, cw // bw)
     series = [r.buckets(n) for r in rings]
     vmax = nice_max(max((v for vals, _ in series for v in vals if v is not None), default=0))
-    out = []
-    for (vals, _), rgb in zip(series, rgbs):
-        out += bar_chart(vals, bw, h, vmax, rgb)
+    rows = []
+    for i, ((vals, _), rgb) in enumerate(zip(series, rgbs)):
+        name = labels[i] if labels and i < len(labels) else ""
+        drawn = bar_chart(vals, bw, h, vmax, rgb)
+        for j, row in enumerate(drawn):
+            # The name goes beside the baseline, the one row of a block that
+            # always has ink in it; above it the label would sit next to
+            # whitespace whenever the series is low.
+            rows.append(line(name if j == len(drawn) - 1 else "", row, w, rgb))
     span = max((s for _, s in series), default=0)
     ticks = [(0, "-" + fmt_span(span)), (cw, "now")]
     if cw >= 40 and span >= 120:
         ticks.insert(1, (cw // 2, "-" + fmt_span(span / 2)))
-    rows = [line("", r, w) for r in out]
     if axis_row:
         rows.append(line("", axis(ticks, cw), w))
     head = kv("peak", fmtf(vmax), WHITE)
-    if not axis_row and span and not labels:
-        # With a legend to show there is no room for both, and which line is
-        # which matters more than how far back the chart reaches.
+    if not axis_row and span:
         head += "   " + kv("over", fmt_span(span), GREY)
-    if labels:
-        head += "   " + "   ".join(f"{fg(c)}━{RST} {C_GREY}{t}{RST}" for t, c in zip(labels, rgbs))
     return [line("", head, w)] + rows
 
 
@@ -1458,7 +1463,7 @@ def cpu_section(s, w, lay):
         out += block("", [kv("busiest", f"{max(s.cores):.0f}%"),
                           kv("average", f"{sum(s.cores) / len(s.cores):.0f}%")], w)
     out += chart([s.r["cpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
-                 axis_row=lay.axis)
+                 labels=["load"], axis_row=lay.axis)
     return out
 
 
@@ -1485,7 +1490,7 @@ def memory_section(s, w, lay):
         kv("holds", fmt_bytes(m["uncompressed"]) + " uncompressed", GREY),
     ], w)
     out += chart([s.r["mem"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
-                 axis_row=lay.axis)
+                 labels=["used"], axis_row=lay.axis)
     # The top-by-memory list lives in exactly one panel. Here while there is
     # room; in the dense layout it joins the process panel, which keeps this
     # one from being the tall column that sets the height of the whole frame.
@@ -1518,7 +1523,7 @@ def gpu_section(s, w, lay):
     if mem:
         out += block("memory", mem, w)
     out += chart([s.r["gpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
-                 axis_row=lay.axis)
+                 labels=["device"], axis_row=lay.axis)
     return out
 
 
@@ -1785,7 +1790,7 @@ def temps_section(s, w, lay):
                                  kv("", f"{hottest[2]:.1f} °C", WHITE),
                                  kv("of", f"{len(sensors)} sensors", GREY)], w)
     out += chart([s.r["temp"]], w, lay.chart_h2, lambda v: f"{v:.0f} °C", [ACCENT],
-                 axis_row=lay.axis)
+                 labels=["cpu"], axis_row=lay.axis)
     return out
 
 
@@ -1922,8 +1927,9 @@ def body_at(s, now, w, lay):
     cw = lay.colw
     parts = [
         cpu_section(s, cw, lay),
-        memory_section(s, cw, lay),
+        temps_section(s, cw, lay),
         gpu_section(s, cw, lay),
+        memory_section(s, cw, lay),
         disk_section(s, cw, now, lay),
     ]
     if lay.split_net:
@@ -1932,10 +1938,7 @@ def body_at(s, now, w, lay):
                   talkers_section(s, cw, lay)]
     else:
         parts.append(network_section(s, cw, lay))
-    parts += [
-        temps_section(s, cw, lay),
-        processes_section(s, cw, lay),
-    ]
+    parts.append(processes_section(s, cw, lay))
     return lay.pack(parts)
 
 

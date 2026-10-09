@@ -49,15 +49,7 @@ impl Battery {
         // mV * µA = 1e-9 W, and Apple reports current flowing *into* the battery.
         info.watts = -(voltage_mv as f64 * amperage_ua) as f32 / 1e9;
 
-        // SMC reports battery temperature in tenths of Kelvin.
-        if let Some(raw) = service.f64("Temperature") {
-            let kelvin = raw / 10.0;
-            info.temp_c = if (200.0..400.0).contains(&kelvin) {
-                Some((kelvin - 273.15) as f32)
-            } else {
-                Some((raw / 100.0) as f32)
-            };
-        }
+        info.temp_c = service.f64("Temperature").and_then(battery_celsius);
 
         let design = service.f64("DesignCapacity").unwrap_or(0.0) as f32;
         info.design_mah = design;
@@ -99,5 +91,43 @@ impl Battery {
 impl Default for Battery {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// `AppleSmartBattery`'s `Temperature`, in hundredths of a degree Celsius.
+///
+/// Read as tenths of a Kelvin — which the Smart Battery Data spec prescribes,
+/// and which this code used to prefer — the sibling `VirtualTemperature` comes
+/// out at 78 °C on an idle machine, which is not a battery temperature. In
+/// hundredths of a degree the two fields read 31 °C and 35 °C, and the SMC's
+/// own `gas gauge battery` sensor sits between them.
+///
+/// There is no arithmetic that tells the two units apart in the range a
+/// battery actually occupies: a pack at 25 °C reports 2981 in tenths of a
+/// Kelvin and 2500 in hundredths of a degree, and both divide into something
+/// plausible. So this commits to the unit Apple Silicon uses and returns
+/// nothing at all when the result is not a temperature a battery can have,
+/// rather than converting it twice and believing whichever answer fits.
+pub fn battery_celsius(raw: f64) -> Option<f32> {
+    let celsius = raw / 100.0;
+    (-20.0..80.0).contains(&celsius).then_some(celsius as f32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::battery_celsius;
+
+    #[test]
+    fn hundredths_of_a_degree_are_the_unit() {
+        // Real readings from an M4 on AC: Temperature and VirtualTemperature.
+        assert_eq!(battery_celsius(3083.0), Some(30.83));
+        assert_eq!(battery_celsius(3509.0), Some(35.09));
+    }
+
+    #[test]
+    fn nonsense_is_reported_as_nothing() {
+        assert_eq!(battery_celsius(0.0), Some(0.0));
+        assert_eq!(battery_celsius(29815.0), None); // whatever this is, not °C
+        assert_eq!(battery_celsius(-5000.0), None);
     }
 }

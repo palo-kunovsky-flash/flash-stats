@@ -179,6 +179,10 @@ library, so there is nothing to install:
 scroll, `r` refreshes every cached source, and `h` opens a help screen that
 explains each number, where it comes from and how often it is read.
 
+Every chart names its series in the label column, in the colour it is drawn
+in. A chart of two series is two blocks one above the other, and a swatch
+legend off to the side never answered which block was which.
+
 The layout follows the window and reflows as you drag it. Rather than guess
 from the width, every frame is built in each column count that fits and the
 shortest one wins — ties going to fewer, wider columns — so the arrangement is
@@ -207,41 +211,41 @@ lines and cut twelve. The automatic floor is the width at which nothing has to
 be abbreviated.
 
 ```text
- TEMPERATURES  IOKit IOHID · 0s ago ───────────────────────────────────────────────────────
- cpu       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 54 °C   avg 47 °C
- gpu       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44 °C   max 52 °C
- also      ssd 42 °C   battery 32 °C
- hottest   PMU tdie1   53.8 °C   of 43 sensors
+ TEMPERATURES  IOKit IOHID · 2s ago ───────────────────────────────────────────────────────
+ cpu       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 53 °C   avg 49 °C
+ gpu       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 47 °C   max 52 °C
+ also      ssd 44 °C   battery 33 °C
+ hottest   PMU tdie6   53.5 °C   of 43 sensors
            peak 60 °C
                                                                                          ▅
                                                                                          █
-                                                                                         █
+ cpu                                                                                     █
            -4s                                                                          now
 
  NETWORK  netstat + route · 0s ago ────────────────────────────────────────────────────────
  link      Wi-Fi   device en0   type wifi
  address   local 10.1.1.127   gateway 10.1.0.1   public 203.0.113.47
  wi-fi     hidden — grant Location Services to this terminal
- rate      down 11.0 KB/s   up 12.5 KB/s
-           peak 14.6 KB/s   ━ down   ━ up
-                                                                                         ▂
-                                                                                         █
-                                                                                       ▁ █
+ rate      down 34.6 KB/s   up 251 KB/s
+           peak 293 KB/s
+
+
+ down                                                                                  ▁ ▂
                                                                                          ▄
                                                                                          █
-                                                                                       ▁ █
+ up                                                                                    ▁ █
            -4s                                                                          now
 
  interface                                            down         up   total in        out
- en0 10.1.1.127                                   9.7 KB/s  12.3 KB/s     298 GB     270 GB
- utun4 100.113.100.83                             1.4 KB/s    167 B/s     764 MB     116 MB
+ en0 10.1.1.127                                  34.6 KB/s   251 KB/s     298 GB     270 GB
+ utun4 100.113.100.83                                0 B/s      0 B/s     764 MB     116 MB
 
  talkers                                                                    down         up
- Google Chrome H 22971                                                  8.2 KB/s   7.1 KB/s
- io.tailscale.ip 21264                                                   202 B/s     43 B/s
- mDNSResponder 479                                                       105 B/s     43 B/s
- syspolicyd 82377                                                          0 B/s     69 B/s
- claude.exe 80717                                                         39 B/s      0 B/s
+ gh 14138                                                               5.4 KB/s   1.9 KB/s
+ gh 14151                                                               5.4 KB/s   1.9 KB/s
+ gh 14161                                                               3.2 KB/s   1.9 KB/s
+ gh 14160                                                               3.2 KB/s   1.9 KB/s
+ io.tailscale.ip 21264                                                   221 B/s    547 B/s
 ```
 
 It reads the machine the way the app does. The Mach calls behind the widget's

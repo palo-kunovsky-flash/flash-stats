@@ -4,6 +4,19 @@ Notable changes per release. Dates are the day the build was published.
 
 ## Unreleased
 
+### Fixed
+
+- **The battery temperature read about four degrees high.** `AppleSmartBattery`
+  reports `Temperature` in hundredths of a degree Celsius, and the widget
+  preferred to read it as tenths of a Kelvin. The sibling `VirtualTemperature`
+  settles it: in Kelvin it comes out at 78 °C on an idle machine, which is not
+  a battery temperature, and the SMC's own `gas gauge battery` sensor sits
+  beside the Celsius reading. No arithmetic can tell the two units apart in the
+  range a battery occupies — a pack at 25 °C reports 2981 in tenths of a Kelvin
+  and 2500 in hundredths of a degree, and both divide into something plausible
+  — so the conversion now commits to the unit Apple Silicon uses and reports
+  nothing when the result is not a temperature a battery can have.
+
 ### Added
 
 - **`flash-top`, the same dashboard in a terminal.** One Python file, standard
@@ -18,6 +31,11 @@ Notable changes per release. Dates are the day the build was published.
   with the SSD and battery sensors beside them. The battery moved out of its
   own panel and onto the machine line to make room — a chart of a number that
   moves over hours was the least useful thing on screen.
+- **Charts name their series.** Each series is labelled in the chart's own
+  label column, in the colour it is drawn in, so a two-series chart says which
+  of its two blocks is which. The panels are also ordered so that what belongs
+  together sits together: the SoC and its heat, then what it is working on,
+  then storage, the network, and finally the processes behind all of it.
 - **The terminal dashboard lays itself out for the window it is in.** Every
   frame is built in each column count that fits, up to eight, and the shortest
   one wins, so the arrangement is measured rather than guessed from the width:
