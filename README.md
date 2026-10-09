@@ -207,42 +207,41 @@ lines and cut twelve. The automatic floor is the width at which nothing has to
 be abbreviated.
 
 ```text
- CPU  mach host_statistics · live ─────────────────────────────────────────────────────────
- total       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 98%
- split       user 68.1%   system 29.8%   idle  2.1%   nice  0.0%
- cores       E ██████   P ████
-             busiest 100%   average 98%
-             peak 100%
-                                                                                         ▇
+ TEMPERATURES  IOKit IOHID · 0s ago ───────────────────────────────────────────────────────
+ cpu       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 54 °C   avg 47 °C
+ gpu       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44 °C   max 52 °C
+ also      ssd 42 °C   battery 32 °C
+ hottest   PMU tdie1   53.8 °C   of 43 sensors
+           peak 60 °C
+                                                                                         ▅
                                                                                          █
                                                                                          █
-                                                                                       ▁ █
-             -4s                                                                        now
+           -4s                                                                          now
 
  NETWORK  netstat + route · 0s ago ────────────────────────────────────────────────────────
- link        Wi-Fi   device en0   type wifi
- address     local 10.1.1.127   gateway 10.1.0.1   public 203.0.113.47
- wi-fi       hidden — grant Location Services to this terminal
- rate        down 39.9 KB/s   up 6.3 KB/s
-             peak 48.8 KB/s   ━ down   ━ up
-                                                                                         ▃
+ link      Wi-Fi   device en0   type wifi
+ address   local 10.1.1.127   gateway 10.1.0.1   public 203.0.113.47
+ wi-fi     hidden — grant Location Services to this terminal
+ rate      down 11.0 KB/s   up 12.5 KB/s
+           peak 14.6 KB/s   ━ down   ━ up
+                                                                                         ▂
                                                                                          █
                                                                                        ▁ █
+                                                                                         ▄
+                                                                                         █
+                                                                                       ▁ █
+           -4s                                                                          now
 
+ interface                                            down         up   total in        out
+ en0 10.1.1.127                                   9.7 KB/s  12.3 KB/s     298 GB     270 GB
+ utun4 100.113.100.83                             1.4 KB/s    167 B/s     764 MB     116 MB
 
-                                                                                       ▁ ▃
-             -4s                                                                        now
-
-             interface                           down         up   total in        out
-             en0 10.1.1.127                 38.9 KB/s   6.2 KB/s     298 GB     270 GB
-             utun4 100.113.100.83            1.0 KB/s    133 B/s     760 MB     115 MB
-
-             talkers                                                down         up
-             gh 3700                                           56.0 KB/s    576 B/s
-             Google Chrome H 22971                             26.6 KB/s     45 B/s
-             claude.exe 80717                                   2.7 KB/s      0 B/s
-             mDNSResponder 479                                  2.1 KB/s    369 B/s
-             claude.exe 43667                                    763 B/s      0 B/s
+ talkers                                                                    down         up
+ Google Chrome H 22971                                                  8.2 KB/s   7.1 KB/s
+ io.tailscale.ip 21264                                                   202 B/s     43 B/s
+ mDNSResponder 479                                                       105 B/s     43 B/s
+ syspolicyd 82377                                                          0 B/s     69 B/s
+ claude.exe 80717                                                         39 B/s      0 B/s
 ```
 
 It reads the machine the way the app does. The Mach calls behind the widget's
@@ -253,11 +252,21 @@ the widget because the arithmetic is the same. Everything that needs a command
 (`ioreg`, `netstat`, `ps`, `nettop`) runs on a background thread at its own
 interval, so a frame never waits for one.
 
-Two readings the app has and the script does not:
+The temperatures come from the same place as the widget's, which is not a
+public place at all: `powermetrics` needs root and the SMC keys are exported
+nowhere, so both reach the sensors through IOKit's private
+`IOHIDEventSystemClient` — the app from Rust, the script through `ctypes`. CPU
+shows the hottest sensor of its group and GPU the average of its own, as in the
+app; on Apple Silicon those groups are the `PMU tdie*` sensors on the CPU side
+of the SoC and the `PMU2 *` sensors on the GPU side. Reading all forty-odd of
+them costs about 45 ms, which is why it happens every six seconds on a
+background thread. Being private, it can be withdrawn by any macOS release, and
+the panel then says `n/a` instead of guessing.
+
+One reading the app has and the script does not:
 
 | Reading | Why |
 | --- | --- |
-| CPU and GPU temperature | The SMC sensors need root, or the private IOKit HID API the app calls from Rust. A script gets the battery sensor and `n/a` for the rest. |
 | Wi-Fi name | Without Location Services permission for your terminal, macOS answers the query with the literal string `<redacted>`. The app asks for the permission; a script cannot. |
 
 Process CPU is computed from the growth of each process's cumulative CPU time

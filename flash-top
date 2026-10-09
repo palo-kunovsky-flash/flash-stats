@@ -197,6 +197,25 @@ def bar(pct, width):
     return cells + C_FAINT + "━" * (width - n) + RST
 
 
+def bar_of(frac, width, text):
+    """A bar for an arbitrary quantity, captioned with its own reading."""
+    frac = max(0.0, min(1.0, frac))
+    n = round(frac * width)
+    track = "".join(fg(ramp(i / max(1, width - 1))) + "━" for i in range(n))
+    track += C_FAINT + "━" * (width - n) + RST
+    return f"{track} {BOLD}{fg(ramp(frac))}{text}{RST}"
+
+
+#: Where a thermal bar starts and ends. An idle SoC sits in the forties and
+#: starts throttling in the nineties, so that is the span worth showing.
+TEMP_COLD, TEMP_HOT = 30.0, 95.0
+
+
+def temp_bar(celsius, width):
+    return bar_of((celsius - TEMP_COLD) / (TEMP_HOT - TEMP_COLD), width,
+                  f"{celsius:.0f} °C")
+
+
 def bar_pct(pct, width, invert=False):
     """A bar with its own number behind it, in the color it has earned.
 
@@ -877,6 +896,188 @@ def read_processes():
     return out
 
 
+# ── platform: the thermal sensors, through the API the widget uses ───────────
+#: CoreFoundation and IOKit, loaded only where they exist.
+_CF = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/"
+                  "CoreFoundation") if DARWIN else None
+_IOKIT = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit") if DARWIN else None
+_UTF8 = 0x08000100  # kCFStringEncodingUTF8
+_CF_SINT32 = 3      # kCFNumberSInt32Type
+
+
+def _bind_thermal():
+    """Declare the handful of C functions the sensor read needs.
+
+    Every IOHIDEventSystem* symbol here is private: there is no public API for
+    the SMC thermal sensors, `powermetrics` wants root, and the keys are not
+    exported anywhere else. This is the same interface the widget calls from
+    Rust. Private also means Apple can take it away, so nothing below assumes
+    success — a missing symbol or a null reference reads as no sensors.
+    """
+    void, c_int, c_uint32 = ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32
+    for lib, name, argtypes, restype in (
+        (_CF, "CFStringCreateWithCString", [void, ctypes.c_char_p, c_uint32], void),
+        (_CF, "CFNumberCreate", [void, c_int, void], void),
+        (_CF, "CFDictionaryCreate", [void, void, void, ctypes.c_long, void, void], void),
+        (_CF, "CFArrayGetCount", [void], ctypes.c_long),
+        (_CF, "CFArrayGetValueAtIndex", [void, ctypes.c_long], void),
+        (_CF, "CFStringGetCString", [void, ctypes.c_char_p, ctypes.c_long, c_uint32],
+         ctypes.c_bool),
+        (_CF, "CFRelease", [void], None),
+        (_IOKIT, "IOHIDEventSystemClientCreate", [void], void),
+        (_IOKIT, "IOHIDEventSystemClientSetMatching", [void, void], c_int),
+        (_IOKIT, "IOHIDEventSystemClientCopyServices", [void], void),
+        (_IOKIT, "IOHIDServiceClientCopyProperty", [void, void], void),
+        (_IOKIT, "IOHIDServiceClientCopyEvent",
+         [void, ctypes.c_int64, ctypes.c_int32, ctypes.c_int64], void),
+        (_IOKIT, "IOHIDEventGetFloatValue", [void, c_uint32], ctypes.c_double),
+    ):
+        fn = getattr(lib, name)
+        fn.argtypes, fn.restype = argtypes, restype
+
+
+def _cfstr(text):
+    return _CF.CFStringCreateWithCString(None, text.encode(), _UTF8)
+
+
+def _cfnum(value):
+    raw = ctypes.c_int32(value)
+    return _CF.CFNumberCreate(None, _CF_SINT32, ctypes.byref(raw))
+
+
+def _pystr(ref):
+    """A CFString as a str, releasing the reference the Copy call handed over."""
+    if not ref:
+        return None
+    buf = ctypes.create_string_buffer(256)
+    got = _CF.CFStringGetCString(ref, buf, 256, _UTF8)
+    _CF.CFRelease(ref)
+    return buf.value.decode(errors="replace") if got else None
+
+
+def canonical_celsius(raw):
+    """Some proximity sensors report Fahrenheit.
+
+    Above 105 the firmware means °F — the SoC throttles hard long before a real
+    105 °C — so those are converted and everything downstream is in °C.
+    """
+    return (raw - 32.0) * 5.0 / 9.0 if raw > 105.0 else raw
+
+
+def group_of(label):
+    """The cryptic HID names, grouped the way the widget groups them.
+
+    Apple Silicon surfaces the SMC as `PMU tdie*` / `PMU2 tdev*` / `NAND CH0` /
+    `gas gauge battery`; PMU is the CPU side of the SoC and PMU2 the GPU side.
+    Intel Macs report the classic SMC keys instead (Tp = CPU, Tg = GPU,
+    Tm = memory, TB = battery).
+    """
+    l = label.lower()
+    if "battery" in l or "gas gauge" in l or l.startswith("tb"):
+        return "battery"
+    if l.startswith("pmu2") or "gpu" in l or l.startswith("tg") or "gddr" in l:
+        return "gpu"
+    if any(k in l for k in ("nand", "ssd", "ambient", "airflow", "skin", "mem")) \
+            or l.startswith("tm"):
+        return "ssd"
+    if l.startswith("pmu") or "cpu" in l or "core" in l \
+            or l.startswith(("tp", "tc", "ta")):
+        return "cpu"
+    return "other"
+
+
+class Thermal:
+    """Every SMC temperature sensor, by name and group.
+
+    The services are enumerated once — sensors do not come and go — and only
+    the events are read each round, which is where the time goes: about 40 ms
+    for the forty-odd sensors on an M4. That is why this sits on a background
+    thread and refreshes every few seconds rather than every frame.
+    """
+
+    PAGE, USAGE, EVENT = 0xff00, 5, 15  # AppleVendor page, temperature sensor
+    FIELD = EVENT << 16                 # IOHIDEventFieldBase(kIOHIDEventTypeTemperature)
+
+    def __init__(self):
+        self.services = []
+        self.client = None
+        self.failed = not DARWIN
+
+    def _open(self):
+        """Create the client and remember every temperature service."""
+        _bind_thermal()
+        self.client = _IOKIT.IOHIDEventSystemClientCreate(None)
+        if not self.client:
+            raise OSError("IOHIDEventSystemClientCreate returned null")
+        keys = (ctypes.c_void_p * 2)(_cfstr("PrimaryUsagePage"), _cfstr("PrimaryUsage"))
+        values = (ctypes.c_void_p * 2)(_cfnum(self.PAGE), _cfnum(self.USAGE))
+        key_cb = ctypes.c_void_p.in_dll(_CF, "kCFTypeDictionaryKeyCallBacks")
+        val_cb = ctypes.c_void_p.in_dll(_CF, "kCFTypeDictionaryValueCallBacks")
+        matching = _CF.CFDictionaryCreate(None, keys, values, 2,
+                                          ctypes.byref(key_cb), ctypes.byref(val_cb))
+        if not matching:
+            raise OSError("could not build the matching dictionary")
+        _IOKIT.IOHIDEventSystemClientSetMatching(self.client, matching)
+        array = _IOKIT.IOHIDEventSystemClientCopyServices(self.client)
+        if not array:
+            raise OSError("IOHIDEventSystemClientCopyServices returned null")
+        product = _cfstr("Product")
+        found = []
+        for i in range(_CF.CFArrayGetCount(array)):
+            service = _CF.CFArrayGetValueAtIndex(array, i)
+            name = _pystr(_IOKIT.IOHIDServiceClientCopyProperty(service, product))
+            if name:
+                found.append((name, group_of(name), service))
+        # The array owns the services, so it is deliberately never released.
+        self.services = found
+
+    def read(self):
+        """[(name, group, celsius)], or [] when the private API says no."""
+        if self.failed:
+            return []
+        try:
+            if not self.services:
+                self._open()
+            out = []
+            for name, group, service in self.services:
+                event = _IOKIT.IOHIDServiceClientCopyEvent(service, self.EVENT, 0, 0)
+                if not event:
+                    continue
+                value = _IOKIT.IOHIDEventGetFloatValue(event, self.FIELD)
+                _CF.CFRelease(event)
+                celsius = canonical_celsius(value)
+                if -20.0 <= celsius <= 130.0:
+                    out.append((name, group, celsius))
+            return out
+        except Exception:
+            # One failed read is a hiccup; a failed open is permanent.
+            self.failed = not self.services
+            return []
+
+
+_THERMAL = Thermal()
+
+
+def read_thermal():
+    """Sensor readings plus the per-group figures the widget shows.
+
+    CPU takes the hottest sensor of its group and GPU the average of its own,
+    which is what the app does: a single CPU die sensor is the thing that
+    throttles, while the GPU figure is steadier read as an average.
+    """
+    sensors = _THERMAL.read()
+    if not sensors:
+        return {"sensors": [], "groups": {}}
+    groups = {}
+    for _, group, celsius in sensors:
+        groups.setdefault(group, []).append(celsius)
+    return {
+        "sensors": sensors,
+        "groups": {g: {"max": max(v), "avg": sum(v) / len(v), "n": len(v)}
+                   for g, v in groups.items()},
+    }
+
+
 # ── sampler ───────────────────────────────────────────────────────────────────
 class Sampler:
     """Fast metrics on the caller's thread, everything else on two workers.
@@ -889,7 +1090,8 @@ class Sampler:
     MIN_PROC_DT = 1.0  # seconds between two `ps` samples before a rate means anything
 
     FAST = (("net", 0), ("gpu", 2.0), ("procs", 3.0), ("diskio", 2.0),
-            ("space", 10.0), ("power", 15.0), ("links", 20.0), ("ssid", 20.0))
+            ("thermal", 6.0), ("space", 10.0), ("power", 15.0),
+            ("links", 20.0), ("ssid", 20.0))
     SLOW = (("talkers", 10.0), ("pubip", 300.0))
 
     def __init__(self, interval, no_net_calls=False):
@@ -921,7 +1123,7 @@ class Sampler:
         self.started = time.time()
 
         self.r = {k: Ring(interval) for k in
-                  ("cpu", "mem", "gpu", "down", "up", "dread", "dwrite", "batt", "free")}
+                  ("cpu", "mem", "gpu", "temp", "down", "up", "dread", "dwrite", "free")}
         self.meta = self._meta()
 
     # -- static facts, read once
@@ -977,6 +1179,7 @@ class Sampler:
                 "diskio": read_disk_io,
                 "space": read_disk_space,
                 "power": read_battery,
+                "thermal": read_thermal,
                 "links": read_links,
                 "talkers": read_talkers,
                 "pubip": read_public_ip,
@@ -1108,7 +1311,8 @@ class Sampler:
         self.r["up"].push(up)
         self.r["dread"].push(self.disk_rate["read"])
         self.r["dwrite"].push(self.disk_rate["write"])
-        self.r["batt"].push(power.get("level") if power.get("present") else None)
+        hot = ((self.get("thermal") or {}).get("groups") or {}).get("cpu")
+        self.r["temp"].push(hot["max"] if hot else None)
         self.r["free"].push(space.get("free"))
 
     def real_links(self):
@@ -1197,7 +1401,7 @@ def system_section(s, w, now, lay):
             kv("load", f"{load[0]:.2f}  {load[1]:.2f}  {load[2]:.2f}"),
             kv("processes", str(s.proc_count or "…")),
             kv("up", fmt_dur(now - m["boot"]) if m["boot"] else "?"),
-        ], w)
+        ] + battery_segs(s, now, lay), w)
         return out
     out += block("machine", [
         kv("", m["chip"], WHITE),
@@ -1218,6 +1422,9 @@ def system_section(s, w, now, lay):
             kv("", fmt_dur(now - m["boot"]), WHITE),
             kv("since", fmt_clock(m["boot"], now)),
         ], w)
+    power = battery_segs(s, now, lay)
+    if power:
+        out += block("battery", power[1:] or power, w)
     return out
 
 
@@ -1501,54 +1708,84 @@ def proc_table(rows, w, by="cpu", title=None):
     return out
 
 
-def power_section(s, w, now, lay):
+def battery_segs(s, now, lay):
+    """The battery as a run of segments for the machine line.
+
+    It used to have a panel of its own, with a chart of a number that moves
+    over hours. On a widescreen that panel was the least informative thing on
+    the screen; what matters — how full, what it is doing, how long that leaves
+    — fits on one line, and the temperatures took the panel.
+    """
     p = s.get("power") or {}
-    out = section("power", meta_age(s, "power", "ioreg AppleSmartBattery"), w)
     if not p.get("present"):
-        return out + [line("", kv("", "no battery — desktop or AC only", GREY), w)]
-    out += [line("charge", bar_pct(p["level"], lay.bar, invert=True), w)]
-
-    state = "charging" if p["charging"] else ("on AC" if p["ac"] else "on battery")
-    segs = [kv("", state, OK if p["charging"] else (GREY if p["ac"] else WHITE))]
-    if abs(p["watts"]) > 0.05:
-        flow = "draw" if p["watts"] > 0 else "charge"
-        segs.append(kv(flow, f"{abs(p['watts']):.1f} W", WARN if p["watts"] > 15 else WHITE))
-    segs.append(kv("", f"{p['voltage_mv'] / 1000:.2f} V", GREY))
-    out += block("state", segs, w)
-
+        return []
+    level = p["level"]
+    segs = [kv("battery", f"{level:.0f}%", ramp((100 - level) / 100))]
+    if p["charging"]:
+        segs.append(kv("", "charging", OK))
+    elif p["ac"]:
+        segs.append(kv("", "on AC", GREY))
     if p.get("remaining"):
         kind = "until full" if p["charging"] else "left"
-        out += block("time", [kv(kind, fmt_dur(p["remaining"]), WHITE),
-                              kv("at", fmt_clock(now + p["remaining"], now))], w)
-    elif p["ac"] and p["level"] >= 99:
+        segs.append(kv(kind, fmt_dur(p["remaining"]), WHITE))
+    elif p["ac"] and level >= 99:
         # A finished countdown would keep saying "now"; the moment it finished
         # is the thing that stays true.
         when = f" at {fmt_clock(s.charged_at, now)}" if s.charged_at else ""
-        out += block("time", [kv("", "charged" + when, OK)], w)
+        segs.append(kv("", "charged" + when, OK))
+    if abs(p["watts"]) > 0.05:
+        flow = "draw" if p["watts"] > 0 else "charge"
+        segs.append(kv(flow, f"{abs(p['watts']):.1f} W",
+                       WARN if p["watts"] > 15 else WHITE))
+    if lay.tier == 0:  # room to spare: say how the pack is holding up
+        segs.append(kv("health", f"{p['health']:.0f}%"))
+        if p.get("cycles") is not None:
+            segs.append(kv("cycles", str(p["cycles"])))
+    return segs
 
-    health = [f"{fg(ramp(max(0.0, (100 - p['health']) / 30)))}{p['health']:.0f}%{RST}"]
-    if p.get("cycles") is not None:
-        health.append(kv("cycles", str(p["cycles"])))
-    if p.get("design_mah"):
-        health.append(kv("capacity", f"{p['now_mah']:.0f} / {p['design_mah']:.0f} mAh"))
-    out += block("health", health, w)
-    out += chart([s.r["batt"]], w, lay.chart_h2, lambda v: f"{v:.0f}%", [ACCENT],
-                 axis_row=lay.axis)
-    return out
+
+#: Which groups get a bar of their own, and in which order.
+TEMP_HEADLINE = (("cpu", "cpu", "max"), ("gpu", "gpu", "avg"))
+TEMP_REST = (("ssd", "ssd"), ("battery", "battery"), ("other", "other"))
 
 
 def temps_section(s, w, lay):
-    p = s.get("power") or {}
-    out = section("temperatures", meta_age(s, "power", "ioreg"), w)
-    if p.get("temp_c") is not None:
-        t = p["temp_c"]
-        out += block("battery", [f"{fg(ramp(max(0.0, (t - 20) / 30)))}{t:.1f} °C{RST}"], w)
-    else:
-        out += block("battery", [NA], w)
-    detail = ("— needs root" if lay.tier == 2 else
-              "— macOS keeps the SMC sensors behind root; the widget reads them "
-              "through a private IOKit API that a script cannot reach.")
-    out += block("cpu · gpu", [NA] + words(detail, GREY), w, sep=" ")
+    t = s.get("thermal") or {}
+    groups = t.get("groups") or {}
+    sensors = t.get("sensors") or []
+    out = section("temperatures", meta_age(s, "thermal", "IOKit IOHID"), w)
+    if not groups:
+        detail = ("— private IOKit API unavailable" if lay.tier == 2 else
+                  "— the SMC sensors are reachable only through a private "
+                  "IOKit interface, and this machine refused it.")
+        return out + block("cpu · gpu", [NA] + words(detail, GREY), w, sep=" ")
+
+    # CPU takes the hottest sensor of its group and GPU the average of its own,
+    # which is what the widget shows: one CPU die sensor is the thing that
+    # throttles, while the GPU figure reads steadier as an average.
+    # The bar gives up what the second figure needs, rather than being cut.
+    second = w - LABEL_W - 18 >= 12
+    bw = max(8, min(lay.bar, w - LABEL_W - 18)) if second else lay.bar
+    for key, label, pick in TEMP_HEADLINE:
+        g = groups.get(key)
+        if not g:
+            continue
+        head = temp_bar(g[pick], bw)
+        other = "avg" if pick == "max" else "max"
+        if second:
+            head += "   " + kv(other, f"{g[other]:.0f} °C", GREY)
+        out += [line(label, head, w)]
+    rest = [kv(label, f"{groups[key]['max']:.0f} °C")
+            for key, label in TEMP_REST if key in groups]
+    if rest:
+        out += block("also", rest, w)
+    if lay.tier == 0:
+        hottest = max(sensors, key=lambda x: x[2])
+        out += block("hottest", [kv("", hottest[0], WHITE),
+                                 kv("", f"{hottest[2]:.1f} °C", WHITE),
+                                 kv("of", f"{len(sensors)} sensors", GREY)], w)
+    out += chart([s.r["temp"]], w, lay.chart_h2, lambda v: f"{v:.0f} °C", [ACCENT],
+                 axis_row=lay.axis)
     return out
 
 
@@ -1624,17 +1861,32 @@ HELP = [
         ("talkers", "Per-process rates from nettop, every 10s. There is no public API "
                     "for this, and the call itself takes about a second."),
     ]),
-    ("power", "ioreg AppleSmartBattery, every 15s", [
-        ("charge", "CurrentCapacity, the percentage the menu bar shows."),
+    ("battery", "ioreg AppleSmartBattery, every 15s", [
+        ("battery", "CurrentCapacity, the percentage the menu bar shows. It sits on "
+                    "the machine line rather than in a panel of its own: a chart of a "
+                    "number that moves over hours was the least useful thing on screen."),
         ("draw", "Voltage times instant current. Positive is leaving the battery."),
-        ("time", "Remaining energy over current draw. Once the battery is full there "
-                 "is nothing to count down, so the time it finished is shown instead."),
-        ("health", "MaxCapacity as a share of design capacity."),
+        ("left", "Remaining energy over current draw. Once the battery is full there "
+                 "is nothing to count down, so the time it finished is shown instead — "
+                 "and only if this run was watching when it happened."),
+        ("health", "MaxCapacity as a share of design capacity. Shown with the cycle "
+                   "count when the window is wide enough."),
     ]),
-    ("temperatures", "ioreg, every 15s", [
-        ("battery", "AppleSmartBattery's own sensor, in hundredths of a degree."),
-        ("cpu · gpu", "Not available. The SMC sensors need root (powermetrics) or the "
-                      "private IOKit HID API the widget uses from Rust."),
+    ("temperatures", "IOKit IOHID, every 6s", [
+        ("cpu", "The hottest sensor of the CPU group: one die sensor is the thing "
+                "that throttles, so the maximum is the honest figure."),
+        ("gpu", "The average of the GPU group, which reads steadier than any single "
+                "sensor. Both match what the widget shows."),
+        ("groups", "Apple Silicon names its sensors `PMU tdie*` (the CPU side of the "
+                   "SoC), `PMU2 *` (the GPU side), `NAND CH0` and `gas gauge battery`. "
+                   "Intel Macs report the classic SMC keys instead."),
+        ("source", "There is no public API for these: powermetrics needs root and the "
+                   "SMC keys are exported nowhere. This is the same private IOKit "
+                   "interface the widget calls from Rust, reached here through ctypes. "
+                   "Private means Apple can withdraw it, in which case the panel says "
+                   "n/a rather than guessing."),
+        ("scale", "The bar runs from 30 °C to 95 °C — idle to throttling — so the "
+                  "colour means something at a glance."),
     ]),
     ("processes", "ps, every 3s", [
         ("cpu", "Percent of one core, from the growth of the process's cumulative CPU "
@@ -1681,7 +1933,6 @@ def body_at(s, now, w, lay):
     else:
         parts.append(network_section(s, cw, lay))
     parts += [
-        power_section(s, cw, now, lay),
         temps_section(s, cw, lay),
         processes_section(s, cw, lay),
     ]
