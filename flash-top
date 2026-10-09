@@ -298,9 +298,12 @@ def balance(heights, n):
     best, groups = None, None
     for cuts in itertools.combinations(range(1, k), n - 1):
         bounds = (0,) + cuts + (k,)
-        tallest = max(sum(heights[a:b]) for a, b in zip(bounds, bounds[1:]))
-        if best is None or tallest < best:
-            best = tallest
+        tall = [sum(heights[a:b]) for a, b in zip(bounds, bounds[1:])]
+        # Shortest tallest column first; among the ties, the evenest set, which
+        # is what stops one column from trailing far below the others.
+        score = (max(tall), sum(t * t for t in tall))
+        if best is None or score < best:
+            best = score
             groups = [list(range(a, b)) for a, b in zip(bounds, bounds[1:])]
     return groups or [list(range(k))]
 
@@ -314,21 +317,29 @@ class Layout:
     charts and tables give up rows.
     """
 
-    MIN_COL = 58
+    MIN_COL = 46
     GAP = 4
-    MAX_COLS = 4
+    MAX_COLS = 6
 
     def __init__(self, w, lines):
         self.w, self.lines = w, lines
         self.cols = max(1, min(self.MAX_COLS, (w + self.GAP) // (self.MIN_COL + self.GAP)))
         self.widths = split_w(w, self.cols, self.GAP) if self.cols > 1 else [w]
         self.colw = min(self.widths)
-        self.compact = self.cols > 1 or lines < 36
-        self.chart_h = 2 if self.compact else 4
-        self.rows = 4 if self.compact else 6
+        # Three tiers: roomy, compact, and dense from three columns on, where
+        # the point is to see the whole machine without scrolling. A narrower
+        # column costs about one line of height, so another column is close to
+        # free and worth taking.
+        self.tier = 2 if self.cols >= 3 else 1 if (self.cols > 1 or lines < 36) else 0
+        self.compact = self.tier > 0
+        self.chart_h = (4, 2, 1)[self.tier]
+        # A two-series chart draws its rows twice, so it gets one fewer.
+        self.chart_h2 = (3, 2, 1)[self.tier]
+        self.axis = self.tier < 2  # otherwise the span rides on the peak line
+        self.rows = (6, 4, 3)[self.tier]
         # Ten is the floor: the longest label ("breakdown") is nine.
         self.label_w = 12 if self.colw >= 100 else 10
-        self.bar = max(8, min(26 if self.compact else 32, self.colw - self.label_w - 8))
+        self.bar = max(8, min((32, 26, 20)[self.tier], self.colw - self.label_w - 8))
 
     def pack(self, parts):
         """Rendered sections into columns, with a blank line between them."""
@@ -400,9 +411,13 @@ class Ring:
         return [None] * (n - len(out)) + out, per * self.interval * len(out)
 
 
-def chart(rings, w, h, fmtf, rgbs, labels=None):
+def chart(rings, w, h, fmtf, rgbs, labels=None, axis_row=True):
     """One chart for one or two series, with a ceiling, a legend and a
-    time axis. Two series share a ceiling so they stay comparable."""
+    time axis. Two series share a ceiling so they stay comparable.
+
+    Without `axis_row` the span moves up onto the ceiling line, which costs a
+    reader nothing and saves a line in every panel.
+    """
     cw = max(8, w - LABEL_W)
     bw = 2 if cw >= 24 else 1
     n = max(1, cw // bw)
@@ -416,8 +431,13 @@ def chart(rings, w, h, fmtf, rgbs, labels=None):
     if cw >= 40 and span >= 120:
         ticks.insert(1, (cw // 2, "-" + fmt_span(span / 2)))
     rows = [line("", r, w) for r in out]
-    rows.append(line("", axis(ticks, cw), w))
+    if axis_row:
+        rows.append(line("", axis(ticks, cw), w))
     head = kv("peak", fmtf(vmax), WHITE)
+    if not axis_row and span and not labels:
+        # With a legend to show there is no room for both, and which line is
+        # which matters more than how far back the chart reaches.
+        head += "   " + kv("over", fmt_span(span), GREY)
     if labels:
         head += "   " + "   ".join(f"{fg(c)}━{RST} {C_GREY}{t}{RST}" for t, c in zip(labels, rgbs))
     return [line("", head, w)] + rows
@@ -1211,7 +1231,8 @@ def cpu_section(s, w, lay):
         out += block("cores", segs, w)
         out += block("", [kv("busiest", f"{max(s.cores):.0f}%"),
                           kv("average", f"{sum(s.cores) / len(s.cores):.0f}%")], w)
-    out += chart([s.r["cpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT])
+    out += chart([s.r["cpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
+                 axis_row=lay.axis)
     return out
 
 
@@ -1237,8 +1258,12 @@ def memory_section(s, w, lay):
         f"{BOLD}{fg(ramp(press / 100))}{press:.0f}%{RST}",
         kv("holds", fmt_bytes(m["uncompressed"]) + " uncompressed", GREY),
     ], w)
-    out += chart([s.r["mem"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT])
-    if s.procs_by_mem:
+    out += chart([s.r["mem"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
+                 axis_row=lay.axis)
+    # The top-by-memory list lives in exactly one panel. Here while there is
+    # room; in the dense layout it joins the process panel, which keeps this
+    # one from being the tall column that sets the height of the whole frame.
+    if s.procs_by_mem and lay.tier < 2:
         out += [line("", "", w)]
         out += proc_table(s.procs_by_mem[:lay.rows], w, by="rss", title="top by memory")
     return out
@@ -1266,7 +1291,8 @@ def gpu_section(s, w, lay):
         mem.append(kv("in use", fmt_bytes(g["in_use"])))
     if mem:
         out += block("memory", mem, w)
-    out += chart([s.r["gpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT])
+    out += chart([s.r["gpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
+                 axis_row=lay.axis)
     return out
 
 
@@ -1285,8 +1311,8 @@ def disk_section(s, w, now, lay):
         kv("read", fmt_rate(s.disk_rate["read"]), TEAL),
         kv("write", fmt_rate(s.disk_rate["write"]), BLUE),
     ], w)
-    out += chart([s.r["dread"], s.r["dwrite"]], w, max(2, lay.chart_h - 1), fmt_rate,
-                 [TEAL, BLUE], labels=["read", "write"])
+    out += chart([s.r["dread"], s.r["dwrite"]], w, lay.chart_h2, fmt_rate,
+                 [TEAL, BLUE], labels=["read", "write"], axis_row=lay.axis)
     verdict = disk_forecast(s, now)
     if verdict:
         out += block("forecast", verdict, w, sep=" ")
@@ -1341,15 +1367,17 @@ def network_section(s, w, lay):
         if ssid.get("ssid"):
             out += block("wi-fi", [kv("", ssid["ssid"], WHITE)], w)
         elif ssid.get("blocked"):
-            out += block("wi-fi", [f"{fg(SOFT_BAD)}hidden{RST}"] + words(
-                "— grant Location Services to this terminal", GREY), w, sep=" ")
+            why = ("— no Location Services" if lay.tier == 2 else
+                   "— grant Location Services to this terminal")
+            out += block("wi-fi", [f"{fg(SOFT_BAD)}hidden{RST}"] + words(why, GREY),
+                         w, sep=" ")
 
     out += block("rate", [
         kv("down", fmt_rate(down), TEAL),
         kv("up", fmt_rate(up), BLUE),
     ], w)
-    out += chart([s.r["down"], s.r["up"]], w, max(2, lay.chart_h - 1), fmt_rate,
-                 [TEAL, BLUE], labels=["down", "up"])
+    out += chart([s.r["down"], s.r["up"]], w, lay.chart_h2, fmt_rate,
+                 [TEAL, BLUE], labels=["down", "up"], axis_row=lay.axis)
 
     if rows:
         out += [line("", "", w)]
@@ -1364,7 +1392,13 @@ def network_section(s, w, lay):
 
 
 def table_head(cells, w):
-    return line("", "".join(cells), w)
+    """A table row across the whole panel.
+
+    Unlike a value line a table carries its own column headings, so it does
+    not need the label gutter — and ten characters is the difference between
+    a readable process name and an ellipsis.
+    """
+    return fit("".join(cells), w)
 
 
 NUM_W = 11  # one right-aligned numeric column
@@ -1376,7 +1410,7 @@ def iface_table(rows, w):
     They are the first thing a narrow column can do without — a rate is why
     you are looking, a counter since boot is not.
     """
-    free = w - LABEL_W
+    free = w
     totals = free - 4 * NUM_W >= 18
     nw = max(10, free - NUM_W * (4 if totals else 2))
     head = [C_FAINT + fit("interface", nw) + RST,
@@ -1400,7 +1434,7 @@ def iface_table(rows, w):
 
 
 def talker_table(rows, w, s):
-    nw = max(10, w - LABEL_W - 2 * NUM_W)
+    nw = max(10, w - 2 * NUM_W)
     out = [table_head([C_FAINT + fit("talkers", nw) + RST,
                        C_FAINT + rpad("down", 11) + RST,
                        C_FAINT + rpad("up", 11) + RST], w)]
@@ -1414,7 +1448,7 @@ def talker_table(rows, w, s):
 
 
 def proc_table(rows, w, by="cpu", title=None):
-    nw = max(10, w - LABEL_W - 20)
+    nw = max(10, w - 20)
     cols = [C_FAINT + fit(title or ("by cpu" if by == "cpu" else "by memory"), nw) + RST,
             C_FAINT + rpad("cpu", 9) + RST, C_FAINT + rpad("rss", 11) + RST]
     out = [table_head(cols, w)]
@@ -1459,7 +1493,8 @@ def power_section(s, w, now, lay):
     if p.get("design_mah"):
         health.append(kv("capacity", f"{p['now_mah']:.0f} / {p['design_mah']:.0f} mAh"))
     out += block("health", health, w)
-    out += chart([s.r["batt"]], w, max(2, lay.chart_h - 1), lambda v: f"{v:.0f}%", [ACCENT])
+    out += chart([s.r["batt"]], w, lay.chart_h2, lambda v: f"{v:.0f}%", [ACCENT],
+                 axis_row=lay.axis)
     return out
 
 
@@ -1471,9 +1506,10 @@ def temps_section(s, w, lay):
         out += block("battery", [f"{fg(ramp(max(0.0, (t - 20) / 30)))}{t:.1f} °C{RST}"], w)
     else:
         out += block("battery", [NA], w)
-    out += block("cpu · gpu", [NA] + words(
-        "— macOS keeps the SMC sensors behind root; the widget reads them "
-        "through a private IOKit API that a script cannot reach.", GREY), w, sep=" ")
+    detail = ("— needs root" if lay.tier == 2 else
+              "— macOS keeps the SMC sensors behind root; the widget reads them "
+              "through a private IOKit API that a script cannot reach.")
+    out += block("cpu · gpu", [NA] + words(detail, GREY), w, sep=" ")
     return out
 
 
@@ -1482,9 +1518,11 @@ def processes_section(s, w, lay):
     if not s.procs:
         return out + [line("", C_FAINT + "sampling…" + RST, w)]
     if lay.compact:
-        # The memory panel already carries the top by memory; repeating it
-        # here would cost a dozen lines and say nothing new.
-        return out + proc_table(s.procs[:lay.rows], w, "cpu")
+        out += proc_table(s.procs[:lay.rows], w, "cpu")
+        if lay.tier == 2:  # the memory panel handed this over
+            out += [line("", "", w)]
+            out += proc_table(s.procs_by_mem[:lay.rows], w, "rss")
+        return out
     if w >= 110:
         lw, rw = split_w(w, 2, 4)
         out += columns([proc_table(s.procs[:lay.rows], lw, "cpu"),

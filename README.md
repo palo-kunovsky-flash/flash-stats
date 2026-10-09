@@ -178,11 +178,22 @@ library, so there is nothing to install:
 scroll, `r` refreshes every cached source, and `h` opens a help screen that
 explains each number, where it comes from and how often it is read.
 
-The layout follows the window and reflows as you drag it: one column of panels
-below about 122 characters, two from there, three from 184, four from 246. More
-than one column also means space is worth saving, so the charts and tables give
-up rows — the whole dashboard is 120 lines at 100 characters wide and 31 at
-320, which is the point on a widescreen: everything at once, nothing to scroll.
+The layout follows the window and reflows as you drag it, packing the panels
+into as many columns as the width allows — up to six — and giving up rows once
+there is more than one, because on a widescreen the point is to see the whole
+machine at once:
+
+| Terminal width | Panels side by side | Whole dashboard |
+| --- | --- | --- |
+| 80 | 1 | 121 lines |
+| 128 | 2 | 54 |
+| 160 | 3 | 33 |
+| 200 | 4 | 29 |
+| 320 | 6 | 24 |
+
+A narrower column costs about one line of height, which is why another column
+is worth taking. Past four it stops helping: the height is then set by the
+tallest panel, not by the number of columns.
 
 ```text
  CPU  mach host_statistics · live ─────────────────────────────────────────────────────────
