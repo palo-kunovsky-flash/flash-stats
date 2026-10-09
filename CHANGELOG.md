@@ -23,7 +23,9 @@ Notable changes per release. Dates are the day the build was published.
   library only. CPU and memory come from the same Mach calls the widget makes,
   reached through `ctypes`, so the numbers agree with the app; the commands
   (`ioreg`, `netstat`, `ps`, `nettop`) run on background threads at their own
-  intervals so a frame never waits for one.
+  intervals so a frame never waits for one. It lives in the repository as
+  `./flash-top` and is **not** part of the app bundle, so nothing below about
+  the dashboard changes anything in this download — clone the repo for it.
 - **The terminal dashboard reads the real thermal sensors.** CPU and GPU
   temperature come from IOKit's private `IOHIDEventSystemClient`, the same
   interface the widget uses, reached through `ctypes`: the hottest sensor of

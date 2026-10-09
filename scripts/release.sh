@@ -118,7 +118,7 @@ DMG="$(find "${BUNDLE}/dmg" -name '*.dmg' -maxdepth 1 | head -1)"
 
 step "Checking the signature"
 codesign --verify --strict --verbose=1 "${APP}"
-echo "signature verifies (ad-hoc: users get one 'Open Anyway', see README)"
+echo "signature verifies (ad-hoc, so not notarised: installing needs brew or xattr)"
 
 step "Preparing ${ASSET}"
 cp "${DMG}" "${BUNDLE}/dmg/${ASSET}"
@@ -166,9 +166,40 @@ step "Publishing"
 # swapped for one whose `direct_asset_path` carries no version, leaving
 #   /-/releases/permalink/latest/downloads/flash-stats-aarch64.dmg
 # valid forever.
+# The notes are the changelog entry for this version, so the release page and
+# CHANGELOG.md cannot drift apart. A missing entry stops the release: writing
+# it afterwards never happens.
+CHANGES="$(python3 - "${VERSION}" <<'EXTRACT'
+import re, sys
+version = sys.argv[1]
+text = open("CHANGELOG.md").read()
+match = re.search(r"^## %s\b.*?$(.*?)(?=^## |\Z)" % re.escape(version),
+                  text, re.S | re.M)
+print((match.group(1).strip() if match else ""))
+EXTRACT
+)"
+[ -n "${CHANGES}" ] || { echo "CHANGELOG.md has no '## ${VERSION}' section"; exit 1; }
+
+# Installing: Homebrew first, because it is the only route that leaves nothing
+# to repair. The app is ad-hoc signed and not notarised — macOS 15 removed the
+# right-click bypass and does not reliably offer "Open Anyway" — so the disk
+# image needs the quarantine flag removed by hand.
 NOTES="Apple Silicon build, ${SIZE} download.
 
-First launch needs one **Open Anyway** in System Settings → Privacy & Security; see the README for why."
+\`\`\`sh
+brew tap palo.kunovsky/flash-stats https://gitlab.com/palo.kunovsky/homebrew-flash-stats.git
+brew install --cask flash-stats
+\`\`\`
+
+Downloading the disk image instead? macOS will refuse to open the app, because
+there is no Apple Developer ID behind it to notarise the build. Remove the
+quarantine flag after dragging it to Applications:
+
+\`\`\`sh
+xattr -d com.apple.quarantine \"/Applications/Flash Stats.app\"
+\`\`\`
+
+${CHANGES}"
 
 glab release create "${TAG}" --name "Flash Stats ${VERSION}" --notes "${NOTES}" > /dev/null
 glab release upload "${TAG}" "${DMG}" --use-package-registry --package-name flash-stats > /dev/null
