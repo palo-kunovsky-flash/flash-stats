@@ -428,6 +428,7 @@ class Ring:
 
     def __init__(self, interval):
         self.v, self.interval = [], interval
+        self.ceil, self.ceil_until = 0.0, 0.0
 
     def push(self, value):
         self.v.append(value)
@@ -438,18 +439,39 @@ class Ring:
         return self.v[-1] if self.v else default
 
     def buckets(self, n):
-        """n averages covering the whole history, newest bucket last."""
-        if not self.v:
+        """n averages covering the whole history, newest bucket last.
+
+        The samples are divided proportionally, so the chart is always exactly
+        as wide as the space it was given and still covers everything. Taking
+        a fixed number of samples per bucket instead — ceil(len/n) — leaves
+        the leftmost columns empty the moment the history outgrows the width,
+        and the chart visibly collapses to half its width and grows again
+        every n samples.
+        """
+        count = len(self.v)
+        if not count:
             return [None] * n, 0
-        per = max(1, math.ceil(len(self.v) / n))
-        out, tail = [], list(self.v)
-        while tail and len(out) < n:
-            chunk = tail[-per:]
-            del tail[-per:]
+        if count < n:  # still filling: grow in from the right
+            return [None] * (n - count) + list(self.v), count * self.interval
+        out = []
+        for i in range(n):
+            chunk = self.v[i * count // n:(i + 1) * count // n]
             real = [x for x in chunk if x is not None]
             out.append(sum(real) / len(real) if real else None)
-        out.reverse()
-        return [None] * (n - len(out)) + out, per * self.interval * len(out)
+        return out, count * self.interval
+
+    def ceiling(self, want, now, hold=20.0):
+        """A chart ceiling that rises at once and comes down slowly.
+
+        Rescaling every bar because one bucket spiked, and again when it
+        passes, is the jumpiest thing a live chart can do. A peak therefore
+        holds the scale for a while before it is allowed to drop.
+        """
+        if want >= self.ceil or now >= self.ceil_until:
+            if want > self.ceil:
+                self.ceil_until = now + hold
+            self.ceil = want
+        return self.ceil
 
 
 def chart(rings, w, h, fmtf, rgbs, labels=None, axis_row=True):
@@ -467,7 +489,9 @@ def chart(rings, w, h, fmtf, rgbs, labels=None, axis_row=True):
     bw = 2 if cw >= 24 else 1
     n = max(1, cw // bw)
     series = [r.buckets(n) for r in rings]
-    vmax = nice_max(max((v for vals, _ in series for v in vals if v is not None), default=0))
+    vmax = rings[0].ceiling(
+        nice_max(max((v for vals, _ in series for v in vals if v is not None), default=0)),
+        time.time())
     rows = []
     for i, ((vals, _), rgb) in enumerate(zip(series, rgbs)):
         name = labels[i] if labels and i < len(labels) else ""
@@ -2064,20 +2088,84 @@ def prime(s, interval, budget):
     s.tick()
 
 
+# ── self test ─────────────────────────────────────────────────────────────────
+def selftest():
+    """The invariants that have broken before, checked in one run.
+
+    Every one of these is here because it went wrong in a way that looked like
+    a cosmetic glitch and was not: a chart that halved its width every n
+    samples, a frame one column too wide that left the terminal eating lines.
+    """
+    checks, failed = [], 0
+
+    def ok(name, condition, detail=""):
+        nonlocal failed
+        checks.append((name, bool(condition), detail))
+        failed += not condition
+
+    # A chart is as wide as the space it was given, and stays that way.
+    ring, n = Ring(1.0), 24
+    widths, spans = [], []
+    for i in range(1, 400):
+        ring.push(float(i))
+        vals, span = ring.buckets(n)
+        widths.append(sum(1 for v in vals if v is not None))
+        spans.append(span)
+    ok("chart never narrows", all(b >= a for a, b in zip(widths, widths[1:])),
+       f"shrank {sum(1 for a, b in zip(widths, widths[1:]) if b < a)} times")
+    ok("chart fills its width", all(w == n for w in widths[n - 1:]))
+    ok("span grows smoothly", all(b - a in (0, 1) for a, b in zip(spans, spans[1:])))
+    ok("newest bucket is newest", ring.buckets(n)[0][-1] >= 390)
+
+    # A peak holds the scale, then lets it go.
+    scale = Ring(1.0)
+    ok("ceiling rises at once", scale.ceiling(100, 0) == 100)
+    ok("ceiling holds a peak", scale.ceiling(40, 10) == 100)
+    ok("ceiling comes down", scale.ceiling(40, 100) == 40)
+
+    # Text handling, where a stray escape sequence does the damage.
+    coloured = f"{C_GREY}label{RST} {C_WHITE}value{RST}"
+    ok("ansi is not counted", vis_len(coloured) == len("label value"))
+    ok("fit pads exactly", vis_len(fit(coloured, 40)) == 40)
+    ok("fit cuts exactly", vis_len(fit(coloured, 6)) == 6)
+    ok("fit keeps it printable", "\033[" in fit(coloured, 6))
+
+    # And a frame is exactly as wide as it claims, at any size.
+    sampler = Sampler(1.0)
+    sampler.tick()
+    for cols, lines in ((60, 20), (80, 50), (128, 40), (200, 50), (400, 60)):
+        frame = render(sampler, time.time(), cols, lines)
+        bad = [vis_len(l) for l in frame if vis_len(l) != cols - 1]
+        ok(f"frame is {cols - 1} columns at {cols}x{lines}", not bad, f"{bad[:3]}")
+        ok(f"frame fits {lines} rows at {cols}x{lines}", len(frame) >= 3)
+    sampler.shutdown()
+
+    width = max(len(name) for name, _, _ in checks)
+    for name, good, detail in checks:
+        mark = f"{fg(OK)}ok{RST}" if good else f"{fg(BAD)}FAILED{RST}"
+        print(f"  {name:<{width}}  {mark}{'  ' + detail if detail and not good else ''}")
+    print(f"\n{len(checks) - failed}/{len(checks)} passed")
+    return 1 if failed else 0
+
+
 # ── main loop ─────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Live system dashboard for the terminal.")
-    ap.add_argument("-i", "--interval", type=float, default=2.0,
-                    help="refresh, seconds (default 2)")
+    ap.add_argument("-i", "--interval", type=float, default=1.0,
+                    help="refresh, seconds (default 1)")
     ap.add_argument("--once", action="store_true", help="print one frame and exit")
     ap.add_argument("--no-net", action="store_true",
                     help="never ask the internet for the public address")
     ap.add_argument("-c", "--cols", type=int, default=0, metavar="N",
                     help="force N columns of panels (default: whichever shows "
                          "the whole machine in the fewest lines)")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the drawing invariants and exit")
     ap.add_argument("--wait", type=float, default=6.0,
                     help="how long --once may wait for the slow sources (default 6)")
     args = ap.parse_args()
+    if args.selftest:
+        sys.exit(selftest())
     interval = max(0.25, args.interval)
 
     if not DARWIN:

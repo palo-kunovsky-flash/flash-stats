@@ -176,20 +176,35 @@ The same readings as the widget, in a terminal, for when you are already in one
 library, so there is nothing to install:
 
 ```sh
-./flash-top              # live, refreshing every 2s
-./flash-top -i 1         # faster
+./flash-top              # live, refreshing every second
+./flash-top -i 5         # slower
 ./flash-top --once       # print one frame and exit (also when piped)
 ./flash-top --no-net     # never ask the internet for the public address
 ./flash-top --cols 8     # force eight columns of panels
+./flash-top --selftest   # check the drawing invariants and exit
 ```
+
+Running it costs 1.8% of one core and 31 MB at the default one-second refresh,
+and 1.3% at two seconds — less than the widget, which is the same readings in
+a window.
 
 `q` quits, `↑↓` `j` `k` `PgUp` `PgDn` `space` `b` `g` `G` and the mouse wheel
 scroll, `r` refreshes every cached source, and `h` opens a help screen that
 explains each number, where it comes from and how often it is read.
 
 Every chart names its series in the label column, in the colour it is drawn
-in. A chart of two series is two blocks one above the other, and a swatch
-legend off to the side never answered which block was which.
+in — cpu blue, gpu purple, memory green, the cyan and orange of the downlink
+and uplink, as in the widget. A chart of two series is two blocks one above
+the other, and a swatch legend off to the side never answered which block was
+which.
+
+The charts divide their history proportionally, so one is always exactly as
+wide as the space it was given and still covers the whole session, and a peak
+holds the scale for twenty seconds before it is allowed to fall. Both are
+there because a live chart that rescales on every spike, or that collapses to
+half its width each time the history outgrows the panel, is unreadable in a
+way a still screenshot never shows. `--selftest` checks it, and would have
+caught it.
 
 The layout follows the window and reflows as you drag it. Rather than guess
 from the width, every frame is built in each column count that fits and the

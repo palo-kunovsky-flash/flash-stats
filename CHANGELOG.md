@@ -2,6 +2,35 @@
 
 Notable changes per release. Dates are the day the build was published.
 
+## Unreleased
+
+Nothing in the app itself yet; these are `flash-top`, which lives in the
+repository rather than in the bundle.
+
+### Fixed
+
+- **The chart collapsed to half its width every few sweeps.** Each bucket took
+  a fixed `ceil(len / n)` samples, so the moment the history outgrew the panel
+  the leftmost columns had nothing left to draw and the chart visibly shrank
+  back, over and over. The samples are now divided proportionally between the
+  columns, which fills the width and still covers the whole session.
+- **A single spike rescaled every bar, twice.** The ceiling was the rounded
+  maximum of the moment, so one busy bucket shrank the whole chart and passing
+  it stretched it back. A peak now holds the scale for twenty seconds before it
+  is allowed to fall.
+
+### Added
+
+- **`--selftest`.** The drawing invariants that have broken before — a chart
+  that never narrows, a frame exactly as wide as it claims, text measured
+  without counting escape sequences — checked in one run. Reverting the
+  bucketing fix makes it report `chart never narrows FAILED, shrank 16 times`.
+
+### Changed
+
+- **The default refresh is one second rather than two**, which doubles the
+  charts' resolution for 1.8% of one core instead of 1.3%.
+
 ## 0.1.3 — 2026-10-09
 
 ### Fixed
