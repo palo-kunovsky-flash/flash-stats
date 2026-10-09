@@ -1,6 +1,6 @@
 [package]
 name = "flash-stats"
-version = "0.1.2"
+version = "0.1.3"
 description = "macOS system monitor widgets with a menu-bar network meter"
 authors = ["Palo Kunovsky <palo.kunovsky@gmail.com>"]
 edition = "2021"

@@ -47,10 +47,21 @@ WHITE = (236, 236, 236)     # primary values
 GREY = (140, 140, 146)      # labels, secondary text
 FAINT = (78, 78, 84)        # rules, bar tracks, hints
 ACCENT = (96, 165, 250)     # neutral highlight
-TEAL = (45, 212, 191)       # first series of a pair (down, read)
-ROSE = (251, 146, 160)      # third series
-BLUE = (96, 165, 250)       # second series of a pair (up, write)
+ROSE = (251, 146, 160)      # the second figure of a split
 SOFT_BAD = (232, 128, 118)  # forecasts: noticeable, not alarming
+
+#: One hue per metric, taken from the widget's own stylesheet so the two read
+#: as the same tool. Structure stays grey and a bar still takes its colour from
+#: the ramp, because that one means something; these only say which number a
+#: line belongs to.
+CPU_RGB = (77, 163, 255)    # --cpu  #4da3ff
+GPU_RGB = (191, 123, 255)   # --gpu  #bf7bff
+MEM_RGB = (47, 208, 140)    # --ram  #2fd08c
+TEMP_RGB = (255, 176, 58)   # warm, and not the orange the uplink uses
+DISK_R_RGB = (143, 155, 179)  # --disk #8f9bb3
+DISK_W_RGB = (45, 212, 191)   # teal, against the slate of reads
+DOWN_RGB = (86, 200, 255)   # --down #56c8ff
+UP_RGB = (255, 159, 10)     # --up   #ff9f0a
 OK, WARN, BAD = (80, 200, 120), (240, 180, 50), (240, 85, 85)
 C_WHITE, C_GREY, C_FAINT, C_ACCENT = fg(WHITE), fg(GREY), fg(FAINT), fg(ACCENT)
 ANSI_RE = re.compile(r"\033\[[0-9;?]*[a-zA-Z]")
@@ -1440,7 +1451,7 @@ def cpu_section(s, w, lay):
     out = section("cpu", "mach host_statistics · live", w)
     out += [line("total", bar_pct(busy, bw), w)]
     out += block("split", [
-        kv("user", f"{u:4.1f}%", ACCENT),
+        kv("user", f"{u:4.1f}%", CPU_RGB),
         kv("system", f"{sy:4.1f}%", ROSE),
         kv("idle", f"{idle:4.1f}%", GREY),
         kv("nice", f"{nice:4.1f}%", GREY),
@@ -1462,7 +1473,7 @@ def cpu_section(s, w, lay):
         out += block("cores", segs, w)
         out += block("", [kv("busiest", f"{max(s.cores):.0f}%"),
                           kv("average", f"{sum(s.cores) / len(s.cores):.0f}%")], w)
-    out += chart([s.r["cpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
+    out += chart([s.r["cpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [CPU_RGB],
                  labels=["load"], axis_row=lay.axis)
     return out
 
@@ -1478,8 +1489,8 @@ def memory_section(s, w, lay):
         kv("free", fmt_bytes(m["free"])),
     ], w)
     out += block("breakdown", [
-        kv("app", fmt_bytes(m["app"]), ACCENT),
-        kv("wired", fmt_bytes(m["wired"]), TEAL),
+        kv("app", fmt_bytes(m["app"]), MEM_RGB),
+        kv("wired", fmt_bytes(m["wired"]), DISK_W_RGB),
         kv("compressed", fmt_bytes(m["compressed"]), ROSE),
         kv("cached", fmt_bytes(m["cached"]), GREY),
     ], w)
@@ -1489,7 +1500,7 @@ def memory_section(s, w, lay):
         f"{BOLD}{fg(ramp(press / 100))}{press:.0f}%{RST}",
         kv("holds", fmt_bytes(m["uncompressed"]) + " uncompressed", GREY),
     ], w)
-    out += chart([s.r["mem"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
+    out += chart([s.r["mem"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [MEM_RGB],
                  labels=["used"], axis_row=lay.axis)
     # The top-by-memory list lives in exactly one panel. Here while there is
     # room; in the dense layout it joins the process panel, which keeps this
@@ -1522,7 +1533,7 @@ def gpu_section(s, w, lay):
         mem.append(kv("in use", fmt_bytes(g["in_use"])))
     if mem:
         out += block("memory", mem, w)
-    out += chart([s.r["gpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT],
+    out += chart([s.r["gpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [GPU_RGB],
                  labels=["device"], axis_row=lay.axis)
     return out
 
@@ -1539,11 +1550,11 @@ def disk_section(s, w, now, lay):
             kv("volume", sp.get("path", "/")),
         ], w)
     out += block("activity", [
-        kv("read", fmt_rate(s.disk_rate["read"]), TEAL),
-        kv("write", fmt_rate(s.disk_rate["write"]), BLUE),
+        kv("read", fmt_rate(s.disk_rate["read"]), DISK_R_RGB),
+        kv("write", fmt_rate(s.disk_rate["write"]), DISK_W_RGB),
     ], w)
     out += chart([s.r["dread"], s.r["dwrite"]], w, lay.chart_h2, fmt_rate,
-                 [TEAL, BLUE], labels=["read", "write"], axis_row=lay.axis)
+                 [DISK_R_RGB, DISK_W_RGB], labels=["read", "write"], axis_row=lay.axis)
     verdict = disk_forecast(s, now)
     if verdict:
         out += block("forecast", verdict, w, sep=" ")
@@ -1604,11 +1615,11 @@ def network_section(s, w, lay, tables=True):
                          w, sep=" ")
 
     out += block("rate", [
-        kv("down", fmt_rate(down), TEAL),
-        kv("up", fmt_rate(up), BLUE),
+        kv("down", fmt_rate(down), DOWN_RGB),
+        kv("up", fmt_rate(up), UP_RGB),
     ], w)
     out += chart([s.r["down"], s.r["up"]], w, lay.chart_h2, fmt_rate,
-                 [TEAL, BLUE], labels=["down", "up"], axis_row=lay.axis)
+                 [DOWN_RGB, UP_RGB], labels=["down", "up"], axis_row=lay.axis)
 
     if not tables:
         return out
@@ -1675,8 +1686,8 @@ def iface_table(rows, w, title="interface"):
         name = f"{fg(WHITE if r['primary'] else GREY)}{r['name']}{RST}"
         tail = f" {C_FAINT}{r['ipv4']}{RST}" if r.get("ipv4") else ""
         cells = [fit(name + tail, nw),
-                 rpad(fg(TEAL) + fmt_rate(r["down"]) + RST, NUM_W),
-                 rpad(fg(BLUE) + fmt_rate(r["up"]) + RST, NUM_W)]
+                 rpad(fg(DOWN_RGB) + fmt_rate(r["down"]) + RST, NUM_W),
+                 rpad(fg(UP_RGB) + fmt_rate(r["up"]) + RST, NUM_W)]
         if totals:
             cells += [rpad(C_GREY + fmt_bytes(r["total_in"]) + RST, NUM_W),
                       rpad(C_GREY + fmt_bytes(r["total_out"]) + RST, NUM_W)]
@@ -1692,8 +1703,8 @@ def talker_table(rows, w, s, title="talkers"):
     for r in rows:
         out.append(table_head([
             fit(f"{C_WHITE}{r['name']}{RST} {C_FAINT}{r['pid']}{RST}", nw),
-            rpad(fg(TEAL) + fmt_rate(r["down"]) + RST, 11),
-            rpad(fg(BLUE) + fmt_rate(r["up"]) + RST, 11),
+            rpad(fg(DOWN_RGB) + fmt_rate(r["down"]) + RST, NUM_W),
+            rpad(fg(UP_RGB) + fmt_rate(r["up"]) + RST, NUM_W),
         ], w))
     return out
 
@@ -1789,7 +1800,7 @@ def temps_section(s, w, lay):
         out += block("hottest", [kv("", hottest[0], WHITE),
                                  kv("", f"{hottest[2]:.1f} °C", WHITE),
                                  kv("of", f"{len(sensors)} sensors", GREY)], w)
-    out += chart([s.r["temp"]], w, lay.chart_h2, lambda v: f"{v:.0f} °C", [ACCENT],
+    out += chart([s.r["temp"]], w, lay.chart_h2, lambda v: f"{v:.0f} °C", [TEMP_RGB],
                  labels=["cpu"], axis_row=lay.axis)
     return out
 
