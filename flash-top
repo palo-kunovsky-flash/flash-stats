@@ -317,13 +317,20 @@ class Layout:
     charts and tables give up rows.
     """
 
+    #: The floor for the automatic choice. Below it the tables start cutting
+    #: process names and the chart legend, which costs a reader more than the
+    #: lines it saves — measured at 38 characters, where eight names in the
+    #: frame ended in an ellipsis.
     MIN_COL = 46
+    #: The floor when a column count is forced: narrower than this and a panel
+    #: is not a panel any more.
+    HARD_MIN = 28
     GAP = 4
-    MAX_COLS = 6
+    MAX_COLS = 8  # a packed frame has ten panels; eight columns is plenty
 
-    def __init__(self, w, lines):
+    def __init__(self, w, lines, cols):
         self.w, self.lines = w, lines
-        self.cols = max(1, min(self.MAX_COLS, (w + self.GAP) // (self.MIN_COL + self.GAP)))
+        self.cols = max(1, min(self.MAX_COLS, cols))
         self.widths = split_w(w, self.cols, self.GAP) if self.cols > 1 else [w]
         self.colw = min(self.widths)
         # Three tiers: roomy, compact, and dense from three columns on, where
@@ -336,6 +343,10 @@ class Layout:
         # A two-series chart draws its rows twice, so it gets one fewer.
         self.chart_h2 = (3, 2, 1)[self.tier]
         self.axis = self.tier < 2  # otherwise the span rides on the peak line
+        # Splitting the network panel costs two section headers and only pays
+        # for itself once there are enough columns for the extra panels to
+        # land somewhere useful — measured: worse at three, better at five.
+        self.split_net = self.cols >= 5
         self.rows = (6, 4, 3)[self.tier]
         # Ten is the floor: the longest label ("breakdown") is nine.
         self.label_w = 12 if self.colw >= 100 else 10
@@ -904,6 +915,7 @@ class Sampler:
         self.proc_count = 0
         self.charged_at = None
         self.seen_charging = False
+        self.last_cols = 0  # the column count the previous frame settled on
         self.mem = None
         self.net_totals = (0.0, 0.0)
         self.started = time.time()
@@ -1155,6 +1167,13 @@ class Sampler:
 
 
 # ── sections ──────────────────────────────────────────────────────────────────
+def viable(w, lines, cols, floor=None):
+    """A candidate layout, or None if its columns would be too narrow."""
+    lay = Layout(w, lines, cols)
+    floor = Layout.MIN_COL if floor is None else floor
+    return lay if cols == 1 or lay.colw >= floor else None
+
+
 def meta_age(s, key, source):
     age = s.age(key)
     return f"{source} · {'…' if age is None else fmt_ago(age)}"
@@ -1336,7 +1355,7 @@ def disk_forecast(s, now):
         words(f"— at {fmt_bytes(per_day)}/day over the last {fmt_dur(span)}", GREY)
 
 
-def network_section(s, w, lay):
+def network_section(s, w, lay, tables=True):
     links = s.get("links") or {}
     ssid = s.get("ssid") or {}
     down, up = s.net_totals
@@ -1379,6 +1398,8 @@ def network_section(s, w, lay):
     out += chart([s.r["down"], s.r["up"]], w, lay.chart_h2, fmt_rate,
                  [TEAL, BLUE], labels=["down", "up"], axis_row=lay.axis)
 
+    if not tables:
+        return out
     if rows:
         out += [line("", "", w)]
         out += iface_table(rows, w)
@@ -1389,6 +1410,24 @@ def network_section(s, w, lay):
     elif talkers is None:
         out += [line("talkers", C_FAINT + "sampling…" + RST, w)]
     return out
+
+
+def interfaces_section(s, w, lay):
+    rows = s.real_links()
+    out = section("interfaces", meta_age(s, "net", "netstat"), w)
+    if not rows:
+        return out + [line("", NA, w)]
+    return out + iface_table(rows, w, title="device")
+
+
+def talkers_section(s, w, lay):
+    talkers = s.get("talkers")
+    out = section("talkers", meta_age(s, "talkers", "nettop"), w)
+    if talkers is None:
+        return out + [line("", C_FAINT + "sampling…" + RST, w)]
+    if not talkers:
+        return out + [line("", kv("", "nothing on the wire", GREY), w)]
+    return out + talker_table(talkers[:lay.rows + 2], w, s, title="process")
 
 
 def table_head(cells, w):
@@ -1404,7 +1443,7 @@ def table_head(cells, w):
 NUM_W = 11  # one right-aligned numeric column
 
 
-def iface_table(rows, w):
+def iface_table(rows, w, title="interface"):
     """Rates always; the lifetime totals only when the name still has room.
 
     They are the first thing a narrow column can do without — a rate is why
@@ -1413,7 +1452,7 @@ def iface_table(rows, w):
     free = w
     totals = free - 4 * NUM_W >= 18
     nw = max(10, free - NUM_W * (4 if totals else 2))
-    head = [C_FAINT + fit("interface", nw) + RST,
+    head = [C_FAINT + fit(title, nw) + RST,
             C_FAINT + rpad("down", NUM_W) + RST,
             C_FAINT + rpad("up", NUM_W) + RST]
     if totals:
@@ -1433,9 +1472,9 @@ def iface_table(rows, w):
     return out
 
 
-def talker_table(rows, w, s):
+def talker_table(rows, w, s, title="talkers"):
     nw = max(10, w - 2 * NUM_W)
-    out = [table_head([C_FAINT + fit("talkers", nw) + RST,
+    out = [table_head([C_FAINT + fit(title, nw) + RST,
                        C_FAINT + rpad("down", 11) + RST,
                        C_FAINT + rpad("up", 11) + RST], w)]
     for r in rows:
@@ -1624,14 +1663,80 @@ def help_screen(cols):
 
 
 # ── frame ─────────────────────────────────────────────────────────────────────
-def render(s, now, cols, lines=50):
+def body_at(s, now, w, lay):
+    """Every panel rendered at one candidate's column width, packed."""
+    global LABEL_W
+    LABEL_W = lay.label_w
+    cw = lay.colw
+    parts = [
+        cpu_section(s, cw, lay),
+        memory_section(s, cw, lay),
+        gpu_section(s, cw, lay),
+        disk_section(s, cw, now, lay),
+    ]
+    if lay.split_net:
+        parts += [network_section(s, cw, lay, tables=False),
+                  interfaces_section(s, cw, lay),
+                  talkers_section(s, cw, lay)]
+    else:
+        parts.append(network_section(s, cw, lay))
+    parts += [
+        power_section(s, cw, now, lay),
+        temps_section(s, cw, lay),
+        processes_section(s, cw, lay),
+    ]
+    return lay.pack(parts)
+
+
+def choose_body(s, now, w, lines, want=0):
+    """Build the frame in every column count that fits and keep the shortest.
+
+    A fixed minimum column width was only ever a guess at where another column
+    stops paying for itself. Measuring is cheap — the panels are strings — and
+    it answers the real question: which arrangement shows the whole machine in
+    the fewest lines. Ties go to fewer, wider columns.
+
+    The previous choice has to be beaten by a clear margin, or a list that
+    gains a row would flip the whole layout from one frame to the next.
+    """
+    if want:
+        # Asked for explicitly: give them that many, or as many as still leave
+        # a panel worth the name.
+        for cols in range(min(want, Layout.MAX_COLS), 0, -1):
+            lay = viable(w, lines, cols, Layout.HARD_MIN)
+            if lay is not None:
+                s.last_cols = lay.cols
+                return lay, body_at(s, now, w, lay)
+    best = None
+    for cols in range(1, Layout.MAX_COLS + 1):
+        lay = viable(w, lines, cols)
+        if lay is None:
+            continue
+        body = body_at(s, now, w, lay)
+        key = (len(body), cols)
+        if best is None or key < best[0]:
+            best = (key, lay, body)
+    if best is None:  # cannot happen: one column always fits
+        lay = Layout(w, lines, 1)
+        return lay, body_at(s, now, w, lay)
+    if s.last_cols and s.last_cols != best[1].cols:
+        keep = viable(w, lines, s.last_cols)
+        if keep is not None:
+            held = body_at(s, now, w, keep)
+            if len(held) <= len(best[2]) + 2:
+                best = ((len(held), keep.cols), keep, held)
+    s.last_cols = best[1].cols
+    return best[1], best[2]
+
+
+def render(s, now, cols, lines=50, want_cols=0):
     # One column short of the edge: a glyph in the last column leaves some
     # terminals in a pending-wrap state that eats the next line.
     global LABEL_W
     W = max(40, cols - 1)
     pad_l = 1
     w = W - pad_l
-    lay = Layout(w, lines)
+    lay, body = choose_body(s, now, w, lines, want_cols)
     LABEL_W = lay.label_w
     out = []
 
@@ -1646,17 +1751,7 @@ def render(s, now, cols, lines=50):
 
     out += system_section(s, w, now, lay)
     out.append("")
-    cw = lay.colw
-    out += lay.pack([
-        cpu_section(s, cw, lay),
-        memory_section(s, cw, lay),
-        gpu_section(s, cw, lay),
-        disk_section(s, cw, now, lay),
-        network_section(s, cw, lay),
-        power_section(s, cw, now, lay),
-        temps_section(s, cw, lay),
-        processes_section(s, cw, lay),
-    ])
+    out += body
 
     out = [" " * pad_l + l for l in out]
     keys = (f"{C_GREY}q{RST} {C_FAINT}quit{RST}  {C_GREY}↑↓{RST} {C_FAINT}scroll{RST}  "
@@ -1712,6 +1807,9 @@ def main():
     ap.add_argument("--once", action="store_true", help="print one frame and exit")
     ap.add_argument("--no-net", action="store_true",
                     help="never ask the internet for the public address")
+    ap.add_argument("-c", "--cols", type=int, default=0, metavar="N",
+                    help="force N columns of panels (default: whichever shows "
+                         "the whole machine in the fewest lines)")
     ap.add_argument("--wait", type=float, default=6.0,
                     help="how long --once may wait for the slow sources (default 6)")
     args = ap.parse_args()
@@ -1727,7 +1825,7 @@ def main():
 
     if one_shot:
         size = term_size(live=False)
-        print("\n".join(render(s, time.time(), size.columns, size.lines)))
+        print("\n".join(render(s, time.time(), size.columns, size.lines, args.cols)))
         s.shutdown()
         return
 
@@ -1748,7 +1846,7 @@ def main():
                 next_tick = now + interval
             size = term_size(live=True)
             frame = help_screen(size.columns) if show_help \
-                else render(s, now, size.columns, size.lines)
+                else render(s, now, size.columns, size.lines, args.cols)
             # Header and footer stay put; the panels between them scroll.
             body, view_h = frame[1:-1], max(1, size.lines - 2)
             scroll = max(0, min(scroll, len(body) - view_h))

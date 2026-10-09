@@ -172,28 +172,39 @@ library, so there is nothing to install:
 ./flash-top -i 1         # faster
 ./flash-top --once       # print one frame and exit (also when piped)
 ./flash-top --no-net     # never ask the internet for the public address
+./flash-top --cols 8     # force eight columns of panels
 ```
 
 `q` quits, `↑↓` `j` `k` `PgUp` `PgDn` `space` `b` `g` `G` and the mouse wheel
 scroll, `r` refreshes every cached source, and `h` opens a help screen that
 explains each number, where it comes from and how often it is read.
 
-The layout follows the window and reflows as you drag it, packing the panels
-into as many columns as the width allows — up to six — and giving up rows once
-there is more than one, because on a widescreen the point is to see the whole
-machine at once:
+The layout follows the window and reflows as you drag it. Rather than guess
+from the width, every frame is built in each column count that fits and the
+shortest one wins — ties going to fewer, wider columns — so the arrangement is
+measured rather than assumed:
 
 | Terminal width | Panels side by side | Whole dashboard |
 | --- | --- | --- |
-| 80 | 1 | 121 lines |
+| 80 | 1 | 122 lines |
 | 128 | 2 | 54 |
 | 160 | 3 | 33 |
 | 200 | 4 | 29 |
-| 320 | 6 | 24 |
+| 320 | 6 | 21 |
+| 400 | 8 | 18 |
 
-A narrower column costs about one line of height, which is why another column
-is worth taking. Past four it stops helping: the height is then set by the
-tallest panel, not by the number of columns.
+More than one column means space is worth saving, so a packed frame gives up
+rows: one-row charts, the time span moved onto the line the chart's ceiling
+already occupies, three table rows, and the short form of the two explanatory
+sentences. From five columns on, the network panel splits into three — the
+link, its interfaces and its talkers — because as one tall panel it set the
+height of the whole frame.
+
+`--cols N` forces a count. It will go to eight on a narrower screen than the
+automatic choice would, at a price worth knowing: at 320 characters eight
+columns save three lines and cut eight values short, and at 280 they save five
+lines and cut twelve. The automatic floor is the width at which nothing has to
+be abbreviated.
 
 ```text
  CPU  mach host_statistics · live ─────────────────────────────────────────────────────────

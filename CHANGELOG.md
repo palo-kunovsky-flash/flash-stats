@@ -12,10 +12,13 @@ Notable changes per release. Dates are the day the build was published.
   (`ioreg`, `netstat`, `ps`, `nettop`) run on background threads at their own
   intervals so a frame never waits for one. CPU and GPU temperatures are the
   one thing it cannot show — those need root or the private IOKit API.
-- **The terminal dashboard lays itself out for the window it is in.** Panels
-  pack into up to six balanced columns depending on the width, reflowing as the
-  window is dragged, and a packed frame trims charts and tables rather than
-  stretching them: 121 lines at 80 characters wide, 29 at 200, 24 at 320.
+- **The terminal dashboard lays itself out for the window it is in.** Every
+  frame is built in each column count that fits, up to eight, and the shortest
+  one wins, so the arrangement is measured rather than guessed from the width:
+  122 lines at 80 characters, 29 at 200, 21 at 320, 18 at 400. A packed frame
+  trims charts and tables rather than stretching them, and from five columns on
+  the network panel splits into link, interfaces and talkers, since as one tall
+  panel it set the height of the whole frame. `--cols N` forces a count.
 
 ## 0.1.2 — 2026-08-29
 
