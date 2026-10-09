@@ -12,6 +12,10 @@ Notable changes per release. Dates are the day the build was published.
   (`ioreg`, `netstat`, `ps`, `nettop`) run on background threads at their own
   intervals so a frame never waits for one. CPU and GPU temperatures are the
   one thing it cannot show — those need root or the private IOKit API.
+- **The terminal dashboard lays itself out for the window it is in.** Panels
+  pack into one to four balanced columns depending on the width, reflowing on
+  resize, and a multi-column frame trims charts and tables rather than
+  stretching them: 120 lines at 100 characters, 31 at 320.
 
 ## 0.1.2 — 2026-08-29
 

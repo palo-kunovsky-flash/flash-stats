@@ -178,6 +178,12 @@ library, so there is nothing to install:
 scroll, `r` refreshes every cached source, and `h` opens a help screen that
 explains each number, where it comes from and how often it is read.
 
+The layout follows the window and reflows as you drag it: one column of panels
+below about 122 characters, two from there, three from 184, four from 246. More
+than one column also means space is worth saving, so the charts and tables give
+up rows — the whole dashboard is 120 lines at 100 characters wide and 31 at
+320, which is the point on a widescreen: everything at once, nothing to scroll.
+
 ```text
  CPU  mach host_statistics · live ─────────────────────────────────────────────────────────
  total       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 98%

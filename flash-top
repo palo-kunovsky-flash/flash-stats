@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.util
+import itertools
 import datetime as dt
 import math
 import os
@@ -183,7 +184,9 @@ NA = C_FAINT + "n/a" + RST
 
 
 # ── drawing primitives ────────────────────────────────────────────────────────
-LABEL_W = 12  # left label column, like a settings page
+#: Left label column, like a settings page. Every frame sets it from its own
+#: width (Layout.label_w) before drawing; only the render thread touches it.
+LABEL_W = 12
 
 
 def bar(pct, width):
@@ -267,15 +270,84 @@ def block(label, segs, w, label_rgb=GREY, sep="   "):
             for i, l in enumerate(wrap_segs(segs, w - LABEL_W, sep))]
 
 
-def columns(blocks, w, gap=4):
-    """Place blocks (lists of lines rendered at their own width) side by side."""
+def columns(blocks, w, gap=4, widths=None):
+    """Place blocks (lists of lines rendered at their own width) side by side.
+
+    Without `widths` every block keeps its natural width, which suits two
+    blocks that belong together; a packed layout passes explicit widths so the
+    columns line up down the whole frame.
+    """
     blocks = [b for b in blocks if b]
     if not blocks:
         return []
     h = max(len(b) for b in blocks)
-    widths = [max((vis_len(l) for l in b), default=0) for b in blocks]
+    if widths is None:
+        widths = [max((vis_len(l) for l in b), default=0) for b in blocks]
     return [(" " * gap).join(fit(b[i] if i < len(b) else "", bw) for b, bw in zip(blocks, widths))
             for i in range(h)]
+
+
+def balance(heights, n):
+    """Split a list into n contiguous groups with the flattest tallest group.
+
+    Contiguous, because a reader expects the sections in the order they were
+    written — a shortest-column-first packer would scatter them.
+    """
+    k = len(heights)
+    n = max(1, min(n, k))
+    best, groups = None, None
+    for cuts in itertools.combinations(range(1, k), n - 1):
+        bounds = (0,) + cuts + (k,)
+        tallest = max(sum(heights[a:b]) for a, b in zip(bounds, bounds[1:]))
+        if best is None or tallest < best:
+            best = tallest
+            groups = [list(range(a, b)) for a, b in zip(bounds, bounds[1:])]
+    return groups or [list(range(k))]
+
+
+class Layout:
+    """One frame's sizing decisions, taken once from the terminal's size.
+
+    A section needs the label column plus about fifty-five columns of content
+    to stay readable, and that is what decides how many fit side by side; the
+    rest follows. More than one column means space is worth saving, so the
+    charts and tables give up rows.
+    """
+
+    MIN_COL = 58
+    GAP = 4
+    MAX_COLS = 4
+
+    def __init__(self, w, lines):
+        self.w, self.lines = w, lines
+        self.cols = max(1, min(self.MAX_COLS, (w + self.GAP) // (self.MIN_COL + self.GAP)))
+        self.widths = split_w(w, self.cols, self.GAP) if self.cols > 1 else [w]
+        self.colw = min(self.widths)
+        self.compact = self.cols > 1 or lines < 36
+        self.chart_h = 2 if self.compact else 4
+        self.rows = 4 if self.compact else 6
+        # Ten is the floor: the longest label ("breakdown") is nine.
+        self.label_w = 12 if self.colw >= 100 else 10
+        self.bar = max(8, min(26 if self.compact else 32, self.colw - self.label_w - 8))
+
+    def pack(self, parts):
+        """Rendered sections into columns, with a blank line between them."""
+        parts = [p for p in parts if p]
+        if not parts:
+            return []
+        if self.cols == 1:
+            out = []
+            for part in parts:
+                out += part + [""]
+            return out[:-1]
+        groups = balance([len(p) + 1 for p in parts], self.cols)
+        stacks = []
+        for group in groups:
+            lines = []
+            for i in group:
+                lines += parts[i] + [""]
+            stacks.append(lines[:-1])
+        return columns(stacks, self.w, self.GAP, self.widths[:len(stacks)])
 
 
 def split_w(w, n, gap=4):
@@ -1068,9 +1140,26 @@ def meta_age(s, key, source):
     return f"{source} · {'…' if age is None else fmt_ago(age)}"
 
 
-def system_section(s, w, now):
+def system_section(s, w, now, lay):
     m = s.meta
     out = section("system", f"sysctl · {s.meta['macos']}", w)
+    load = os.getloadavg()
+    if lay.compact:
+        # One run of segments that wraps on its own: a single line on a wide
+        # terminal, two on a narrow one, never a fixed shape.
+        cores = f"{m['logical']} logical"
+        if m["perf"] or m["eff"]:
+            cores += f" · {m['perf']}P + {m['eff']}E"
+        out += block("machine", [
+            kv("", m["chip"], WHITE),
+            kv("macOS", m["macos"]),
+            kv("", m["arch"]),
+            kv("", cores),
+            kv("load", f"{load[0]:.2f}  {load[1]:.2f}  {load[2]:.2f}"),
+            kv("processes", str(s.proc_count or "…")),
+            kv("up", fmt_dur(now - m["boot"]) if m["boot"] else "?"),
+        ], w)
+        return out
     out += block("machine", [
         kv("", m["chip"], WHITE),
         kv("macOS", f"{m['macos']} ({m['build']})"),
@@ -1080,7 +1169,6 @@ def system_section(s, w, now):
     cores = f"{m['logical']} logical"
     if m["perf"] or m["eff"]:
         cores += f" · {m['perf']}P + {m['eff']}E"
-    load = os.getloadavg()
     out += block("load", [
         kv("cores", cores),
         kv("load", f"{load[0]:.2f}  {load[1]:.2f}  {load[2]:.2f}"),
@@ -1094,10 +1182,10 @@ def system_section(s, w, now):
     return out
 
 
-def cpu_section(s, w):
+def cpu_section(s, w, lay):
     u, sy, idle, nice = s.split
     busy = 100.0 - idle
-    bw = max(10, min(32, w - LABEL_W - 8))
+    bw = lay.bar
     out = section("cpu", "mach host_statistics · live", w)
     out += [line("total", bar_pct(busy, bw), w)]
     out += block("split", [
@@ -1123,17 +1211,16 @@ def cpu_section(s, w):
         out += block("cores", segs, w)
         out += block("", [kv("busiest", f"{max(s.cores):.0f}%"),
                           kv("average", f"{sum(s.cores) / len(s.cores):.0f}%")], w)
-    out += chart([s.r["cpu"]], w, 4, lambda v: f"{v:.0f}%", [ACCENT])
+    out += chart([s.r["cpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT])
     return out
 
 
-def memory_section(s, w):
+def memory_section(s, w, lay):
     m = s.mem
     out = section("memory", "mach vm_statistics64 · live", w)
     if not m:
         return out + [line("", NA, w)]
-    bw = max(10, min(32, w - LABEL_W - 8))
-    out += [line("used", bar_pct(m["percent"], bw), w)]
+    out += [line("used", bar_pct(m["percent"], lay.bar), w)]
     out += block("", [
         kv("", f"{fmt_bytes(m['used'])} of {fmt_bytes(m['total'])}", WHITE),
         kv("free", fmt_bytes(m["free"])),
@@ -1150,20 +1237,19 @@ def memory_section(s, w):
         f"{BOLD}{fg(ramp(press / 100))}{press:.0f}%{RST}",
         kv("holds", fmt_bytes(m["uncompressed"]) + " uncompressed", GREY),
     ], w)
-    out += chart([s.r["mem"]], w, 4, lambda v: f"{v:.0f}%", [ACCENT])
+    out += chart([s.r["mem"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT])
     if s.procs_by_mem:
         out += [line("", "", w)]
-        out += proc_table(s.procs_by_mem[:5], w, by="rss", title="top by memory")
+        out += proc_table(s.procs_by_mem[:lay.rows], w, by="rss", title="top by memory")
     return out
 
 
-def gpu_section(s, w):
+def gpu_section(s, w, lay):
     g = s.get("gpu") or {}
     out = section("gpu", meta_age(s, "gpu", "ioreg IOAccelerator"), w)
     if g.get("usage") is None:
         return out + [line("", NA, w)]
-    bw = max(10, min(32, w - LABEL_W - 8))
-    out += [line("device", bar_pct(float(g["usage"]), bw), w)]
+    out += [line("device", bar_pct(float(g["usage"]), lay.bar), w)]
     segs = []
     if g.get("renderer") is not None:
         segs.append(kv("renderer", f"{g['renderer']}%"))
@@ -1180,17 +1266,16 @@ def gpu_section(s, w):
         mem.append(kv("in use", fmt_bytes(g["in_use"])))
     if mem:
         out += block("memory", mem, w)
-    out += chart([s.r["gpu"]], w, 4, lambda v: f"{v:.0f}%", [ACCENT])
+    out += chart([s.r["gpu"]], w, lay.chart_h, lambda v: f"{v:.0f}%", [ACCENT])
     return out
 
 
-def disk_section(s, w, now):
+def disk_section(s, w, now, lay):
     sp = s.get("space") or {}
     out = section("disk", meta_age(s, "diskio", "statvfs + ioreg"), w)
     if sp.get("total"):
         used_pct = (sp["total"] - sp["free"]) * 100.0 / sp["total"]
-        bw = max(10, min(32, w - LABEL_W - 8))
-        out += [line("capacity", bar_pct(used_pct, bw), w)]
+        out += [line("capacity", bar_pct(used_pct, lay.bar), w)]
         out += block("", [
             kv("", f"{fmt_bytes(sp['total'] - sp['free'])} of {fmt_bytes(sp['total'])}", WHITE),
             kv("free", fmt_bytes(sp["free"])),
@@ -1200,8 +1285,8 @@ def disk_section(s, w, now):
         kv("read", fmt_rate(s.disk_rate["read"]), TEAL),
         kv("write", fmt_rate(s.disk_rate["write"]), BLUE),
     ], w)
-    out += chart([s.r["dread"], s.r["dwrite"]], w, 3, fmt_rate, [TEAL, BLUE],
-                 labels=["read", "write"])
+    out += chart([s.r["dread"], s.r["dwrite"]], w, max(2, lay.chart_h - 1), fmt_rate,
+                 [TEAL, BLUE], labels=["read", "write"])
     verdict = disk_forecast(s, now)
     if verdict:
         out += block("forecast", verdict, w, sep=" ")
@@ -1225,7 +1310,7 @@ def disk_forecast(s, now):
         words(f"— at {fmt_bytes(per_day)}/day over the last {fmt_dur(span)}", GREY)
 
 
-def network_section(s, w):
+def network_section(s, w, lay):
     links = s.get("links") or {}
     ssid = s.get("ssid") or {}
     down, up = s.net_totals
@@ -1263,8 +1348,8 @@ def network_section(s, w):
         kv("down", fmt_rate(down), TEAL),
         kv("up", fmt_rate(up), BLUE),
     ], w)
-    out += chart([s.r["down"], s.r["up"]], w, 3, fmt_rate, [TEAL, BLUE],
-                 labels=["down", "up"])
+    out += chart([s.r["down"], s.r["up"]], w, max(2, lay.chart_h - 1), fmt_rate,
+                 [TEAL, BLUE], labels=["down", "up"])
 
     if rows:
         out += [line("", "", w)]
@@ -1272,7 +1357,7 @@ def network_section(s, w):
     talkers = s.get("talkers")
     if talkers:
         out += [line("", "", w)]
-        out += talker_table(talkers, w, s)
+        out += talker_table(talkers[:lay.rows], w, s)
     elif talkers is None:
         out += [line("talkers", C_FAINT + "sampling…" + RST, w)]
     return out
@@ -1282,28 +1367,40 @@ def table_head(cells, w):
     return line("", "".join(cells), w)
 
 
+NUM_W = 11  # one right-aligned numeric column
+
+
 def iface_table(rows, w):
-    nw = max(8, w - LABEL_W - 3 * 11 - 16)
-    out = [table_head([C_FAINT + fit("interface", nw) + RST,
-                       C_FAINT + rpad("down", 11) + RST,
-                       C_FAINT + rpad("up", 11) + RST,
-                       C_FAINT + rpad("total in", 11) + RST,
-                       C_FAINT + rpad("out", 11) + RST], w)]
+    """Rates always; the lifetime totals only when the name still has room.
+
+    They are the first thing a narrow column can do without — a rate is why
+    you are looking, a counter since boot is not.
+    """
+    free = w - LABEL_W
+    totals = free - 4 * NUM_W >= 18
+    nw = max(10, free - NUM_W * (4 if totals else 2))
+    head = [C_FAINT + fit("interface", nw) + RST,
+            C_FAINT + rpad("down", NUM_W) + RST,
+            C_FAINT + rpad("up", NUM_W) + RST]
+    if totals:
+        head += [C_FAINT + rpad("total in", NUM_W) + RST,
+                 C_FAINT + rpad("out", NUM_W) + RST]
+    out = [table_head(head, w)]
     for r in rows:
         name = f"{fg(WHITE if r['primary'] else GREY)}{r['name']}{RST}"
         tail = f" {C_FAINT}{r['ipv4']}{RST}" if r.get("ipv4") else ""
-        out.append(table_head([
-            fit(name + tail, nw),
-            rpad(fg(TEAL) + fmt_rate(r["down"]) + RST, 11),
-            rpad(fg(BLUE) + fmt_rate(r["up"]) + RST, 11),
-            rpad(C_GREY + fmt_bytes(r["total_in"]) + RST, 11),
-            rpad(C_GREY + fmt_bytes(r["total_out"]) + RST, 11),
-        ], w))
+        cells = [fit(name + tail, nw),
+                 rpad(fg(TEAL) + fmt_rate(r["down"]) + RST, NUM_W),
+                 rpad(fg(BLUE) + fmt_rate(r["up"]) + RST, NUM_W)]
+        if totals:
+            cells += [rpad(C_GREY + fmt_bytes(r["total_in"]) + RST, NUM_W),
+                      rpad(C_GREY + fmt_bytes(r["total_out"]) + RST, NUM_W)]
+        out.append(table_head(cells, w))
     return out
 
 
 def talker_table(rows, w, s):
-    nw = max(8, w - LABEL_W - 2 * 11 - 8)
+    nw = max(10, w - LABEL_W - 2 * NUM_W)
     out = [table_head([C_FAINT + fit("talkers", nw) + RST,
                        C_FAINT + rpad("down", 11) + RST,
                        C_FAINT + rpad("up", 11) + RST], w)]
@@ -1317,7 +1414,7 @@ def talker_table(rows, w, s):
 
 
 def proc_table(rows, w, by="cpu", title=None):
-    nw = max(8, w - LABEL_W - 20)
+    nw = max(10, w - LABEL_W - 20)
     cols = [C_FAINT + fit(title or ("by cpu" if by == "cpu" else "by memory"), nw) + RST,
             C_FAINT + rpad("cpu", 9) + RST, C_FAINT + rpad("rss", 11) + RST]
     out = [table_head(cols, w)]
@@ -1331,13 +1428,12 @@ def proc_table(rows, w, by="cpu", title=None):
     return out
 
 
-def power_section(s, w, now):
+def power_section(s, w, now, lay):
     p = s.get("power") or {}
     out = section("power", meta_age(s, "power", "ioreg AppleSmartBattery"), w)
     if not p.get("present"):
         return out + [line("", kv("", "no battery — desktop or AC only", GREY), w)]
-    bw = max(10, min(28, w - LABEL_W - 8))
-    out += [line("charge", bar_pct(p["level"], bw, invert=True), w)]
+    out += [line("charge", bar_pct(p["level"], lay.bar, invert=True), w)]
 
     state = "charging" if p["charging"] else ("on AC" if p["ac"] else "on battery")
     segs = [kv("", state, OK if p["charging"] else (GREY if p["ac"] else WHITE))]
@@ -1363,11 +1459,11 @@ def power_section(s, w, now):
     if p.get("design_mah"):
         health.append(kv("capacity", f"{p['now_mah']:.0f} / {p['design_mah']:.0f} mAh"))
     out += block("health", health, w)
-    out += chart([s.r["batt"]], w, 3, lambda v: f"{v:.0f}%", [ACCENT])
+    out += chart([s.r["batt"]], w, max(2, lay.chart_h - 1), lambda v: f"{v:.0f}%", [ACCENT])
     return out
 
 
-def temps_section(s, w):
+def temps_section(s, w, lay):
     p = s.get("power") or {}
     out = section("temperatures", meta_age(s, "power", "ioreg"), w)
     if p.get("temp_c") is not None:
@@ -1381,18 +1477,22 @@ def temps_section(s, w):
     return out
 
 
-def processes_section(s, w):
+def processes_section(s, w, lay):
     out = section("processes", meta_age(s, "procs", "ps · cpu-time deltas"), w)
     if not s.procs:
         return out + [line("", C_FAINT + "sampling…" + RST, w)]
+    if lay.compact:
+        # The memory panel already carries the top by memory; repeating it
+        # here would cost a dozen lines and say nothing new.
+        return out + proc_table(s.procs[:lay.rows], w, "cpu")
     if w >= 110:
         lw, rw = split_w(w, 2, 4)
-        out += columns([proc_table(s.procs[:6], lw, "cpu"),
-                        proc_table(s.procs_by_mem[:6], rw, "rss")], w, 4)
+        out += columns([proc_table(s.procs[:lay.rows], lw, "cpu"),
+                        proc_table(s.procs_by_mem[:lay.rows], rw, "rss")], w, 4)
     else:
-        out += proc_table(s.procs[:6], w, "cpu")
+        out += proc_table(s.procs[:lay.rows], w, "cpu")
         out += [line("", "", w)]
-        out += proc_table(s.procs_by_mem[:6], w, "rss")
+        out += proc_table(s.procs_by_mem[:lay.rows], w, "rss")
     return out
 
 
@@ -1486,12 +1586,15 @@ def help_screen(cols):
 
 
 # ── frame ─────────────────────────────────────────────────────────────────────
-def render(s, now, cols):
+def render(s, now, cols, lines=50):
     # One column short of the edge: a glyph in the last column leaves some
     # terminals in a pending-wrap state that eats the next line.
+    global LABEL_W
     W = max(40, cols - 1)
     pad_l = 1
     w = W - pad_l
+    lay = Layout(w, lines)
+    LABEL_W = lay.label_w
     out = []
 
     left = f"{BOLD}{C_WHITE}flash-top{RST}  {C_GREY}{s.meta['chip']}{RST}"
@@ -1503,28 +1606,19 @@ def render(s, now, cols):
     out.append(left + " " * gap + right if gap >= 2 else fit(left, w))
     out.append("")
 
-    out += system_section(s, w, now)
+    out += system_section(s, w, now, lay)
     out.append("")
-    wide = w >= 150
-    pairs = [(cpu_section(s, 0), memory_section(s, 0)),
-             (gpu_section(s, 0), disk_section(s, 0, now)),
-             (network_section(s, 0), power_section(s, 0, now))]
-    if wide:
-        lw, rw = split_w(w, 2, 6)
-        for fn_l, fn_r in (((cpu_section, (s, lw)), (memory_section, (s, rw))),
-                           ((gpu_section, (s, lw)), (disk_section, (s, rw, now))),
-                           ((network_section, (s, lw)), (power_section, (s, rw, now)))):
-            out += columns([fn_l[0](*fn_l[1]), fn_r[0](*fn_r[1])], w, 6)
-            out.append("")
-        out += temps_section(s, w)
-    else:
-        for part in (cpu_section(s, w), memory_section(s, w), gpu_section(s, w),
-                     disk_section(s, w, now), network_section(s, w),
-                     power_section(s, w, now), temps_section(s, w)):
-            out += part
-            out.append("")
-    out += [""] if out and out[-1] != "" else []
-    out += processes_section(s, w)
+    cw = lay.colw
+    out += lay.pack([
+        cpu_section(s, cw, lay),
+        memory_section(s, cw, lay),
+        gpu_section(s, cw, lay),
+        disk_section(s, cw, now, lay),
+        network_section(s, cw, lay),
+        power_section(s, cw, now, lay),
+        temps_section(s, cw, lay),
+        processes_section(s, cw, lay),
+    ])
 
     out = [" " * pad_l + l for l in out]
     keys = (f"{C_GREY}q{RST} {C_FAINT}quit{RST}  {C_GREY}↑↓{RST} {C_FAINT}scroll{RST}  "
@@ -1594,7 +1688,8 @@ def main():
     prime(s, interval, args.wait if one_shot else 1.0)
 
     if one_shot:
-        print("\n".join(render(s, time.time(), term_size(live=False).columns)))
+        size = term_size(live=False)
+        print("\n".join(render(s, time.time(), size.columns, size.lines)))
         s.shutdown()
         return
 
@@ -1614,7 +1709,8 @@ def main():
                 s.tick()
                 next_tick = now + interval
             size = term_size(live=True)
-            frame = help_screen(size.columns) if show_help else render(s, now, size.columns)
+            frame = help_screen(size.columns) if show_help \
+                else render(s, now, size.columns, size.lines)
             # Header and footer stay put; the panels between them scroll.
             body, view_h = frame[1:-1], max(1, size.lines - 2)
             scroll = max(0, min(scroll, len(body) - view_h))
