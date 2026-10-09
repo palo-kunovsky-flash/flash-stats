@@ -80,12 +80,20 @@ build; see the roadmap.
 
 ```sh
 brew tap palo.kunovsky/flash-stats https://gitlab.com/palo.kunovsky/homebrew-flash-stats.git
+brew trust palo.kunovsky/flash-stats
 brew install --cask --no-quarantine flash-stats
 ```
 
-Two commands, and it is the only route that leaves nothing for you to fix
+Three commands, and it is the route that leaves nothing for you to fix
 afterwards — see below for why `--no-quarantine` is there. Updates are
 `brew upgrade --cask flash-stats`.
+
+The middle one is not optional and not mine: Homebrew refuses to load a cask
+from a tap outside its own repositories until you say you trust it, with
+`Refusing to load cask … from untrusted tap`. It is asking whether you trust
+me, which is a fair question to be asked about a stranger's install script.
+`brew trust --cask palo.kunovsky/flash-stats/flash-stats` trusts only this one
+cask instead of the whole tap.
 
 ### Or the disk image
 

@@ -188,7 +188,8 @@ NOTES="Apple Silicon build, ${SIZE} download.
 
 \`\`\`sh
 brew tap palo.kunovsky/flash-stats https://gitlab.com/palo.kunovsky/homebrew-flash-stats.git
-brew install --cask flash-stats
+brew trust palo.kunovsky/flash-stats
+brew install --cask --no-quarantine flash-stats
 \`\`\`
 
 Downloading the disk image instead? macOS will refuse to open the app, because
