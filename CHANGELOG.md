@@ -2,6 +2,17 @@
 
 Notable changes per release. Dates are the day the build was published.
 
+## Unreleased
+
+### Added
+
+- **`flash-top`, the same dashboard in a terminal.** One Python file, standard
+  library only. CPU and memory come from the same Mach calls the widget makes,
+  reached through `ctypes`, so the numbers agree with the app; the commands
+  (`ioreg`, `netstat`, `ps`, `nettop`) run on background threads at their own
+  intervals so a frame never waits for one. CPU and GPU temperatures are the
+  one thing it cannot show — those need root or the private IOKit API.
+
 ## 0.1.2 — 2026-08-29
 
 ### Fixed

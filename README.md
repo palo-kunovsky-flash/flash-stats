@@ -160,6 +160,82 @@ action: it shows the widget, orders it to the front of the desktop layer and put
 on its slot on the display with the menu bar. Use it when the bar ends up behind the
 system widgets or on a display that is switched off.
 
+## Terminal dashboard (`flash-top`)
+
+The same readings as the widget, in a terminal, for when you are already in one
+— over SSH, on a second machine, or next to a build that you want to watch.
+`flash-top` is a single Python file with no dependencies beyond the standard
+library, so there is nothing to install:
+
+```sh
+./flash-top              # live, refreshing every 2s
+./flash-top -i 1         # faster
+./flash-top --once       # print one frame and exit (also when piped)
+./flash-top --no-net     # never ask the internet for the public address
+```
+
+`q` quits, `↑↓` `j` `k` `PgUp` `PgDn` `space` `b` `g` `G` and the mouse wheel
+scroll, `r` refreshes every cached source, and `h` opens a help screen that
+explains each number, where it comes from and how often it is read.
+
+```text
+ CPU  mach host_statistics · live ─────────────────────────────────────────────────────────
+ total       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 98%
+ split       user 68.1%   system 29.8%   idle  2.1%   nice  0.0%
+ cores       E ██████   P ████
+             busiest 100%   average 98%
+             peak 100%
+                                                                                         ▇
+                                                                                         █
+                                                                                         █
+                                                                                       ▁ █
+             -4s                                                                        now
+
+ NETWORK  netstat + route · 0s ago ────────────────────────────────────────────────────────
+ link        Wi-Fi   device en0   type wifi
+ address     local 10.1.1.127   gateway 10.1.0.1   public 203.0.113.47
+ wi-fi       hidden — grant Location Services to this terminal
+ rate        down 39.9 KB/s   up 6.3 KB/s
+             peak 48.8 KB/s   ━ down   ━ up
+                                                                                         ▃
+                                                                                         █
+                                                                                       ▁ █
+
+
+                                                                                       ▁ ▃
+             -4s                                                                        now
+
+             interface                           down         up   total in        out
+             en0 10.1.1.127                 38.9 KB/s   6.2 KB/s     298 GB     270 GB
+             utun4 100.113.100.83            1.0 KB/s    133 B/s     760 MB     115 MB
+
+             talkers                                                down         up
+             gh 3700                                           56.0 KB/s    576 B/s
+             Google Chrome H 22971                             26.6 KB/s     45 B/s
+             claude.exe 80717                                   2.7 KB/s      0 B/s
+             mDNSResponder 479                                  2.1 KB/s    369 B/s
+             claude.exe 43667                                    763 B/s      0 B/s
+```
+
+It reads the machine the way the app does. The Mach calls behind the widget's
+CPU and memory numbers — `host_statistics`, `host_statistics64`,
+`host_processor_info` — are reachable through `ctypes`, so those come from the
+kernel in-process with no subprocess in the render path, and they agree with
+the widget because the arithmetic is the same. Everything that needs a command
+(`ioreg`, `netstat`, `ps`, `nettop`) runs on a background thread at its own
+interval, so a frame never waits for one.
+
+Two readings the app has and the script does not:
+
+| Reading | Why |
+| --- | --- |
+| CPU and GPU temperature | The SMC sensors need root, or the private IOKit HID API the app calls from Rust. A script gets the battery sensor and `n/a` for the rest. |
+| Wi-Fi name | Without Location Services permission for your terminal, macOS answers the query with the literal string `<redacted>`. The app asks for the permission; a script cannot. |
+
+Process CPU is computed from the growth of each process's cumulative CPU time
+between two samples, not from `ps`'s own `%CPU` — that one is an average over
+the process's whole life and says nothing about what is busy now.
+
 ## Where the numbers come from (no root)
 
 | Metric | Source |

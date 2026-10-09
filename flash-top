@@ -1,0 +1,1670 @@
+#!/usr/bin/env python3
+"""flash-top — a live system dashboard for the terminal.
+
+Reads what the Flash Stats widget reads, from the same places. The Mach host
+statistics the widget calls from Rust are reachable through ctypes, so CPU and
+memory come straight from the kernel with no subprocess in the render path.
+Everything that needs a command (ioreg, netstat, ps, nettop) runs on a
+background thread at its own interval, so a frame never waits for one.
+
+Standard library only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import ctypes.util
+import datetime as dt
+import math
+import os
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import termios
+import textwrap
+import threading
+import time
+import tty
+
+DARWIN = sys.platform == "darwin"
+HISTORY = 1800  # samples kept per series
+
+
+# ── look & text helpers ───────────────────────────────────────────────────────
+# Linear/Vercel-like: grey scale for structure, one accent for data, and
+# semantic color only where it carries meaning (ok / warning / problem).
+def fg(rgb):
+    return "\033[38;2;%d;%d;%dm" % rgb
+
+
+RST, BOLD = "\033[0m", "\033[1m"
+WHITE = (236, 236, 236)     # primary values
+GREY = (140, 140, 146)      # labels, secondary text
+FAINT = (78, 78, 84)        # rules, bar tracks, hints
+ACCENT = (96, 165, 250)     # neutral highlight
+TEAL = (45, 212, 191)       # first series of a pair (down, read)
+ROSE = (251, 146, 160)      # third series
+BLUE = (96, 165, 250)       # second series of a pair (up, write)
+SOFT_BAD = (232, 128, 118)  # forecasts: noticeable, not alarming
+OK, WARN, BAD = (80, 200, 120), (240, 180, 50), (240, 85, 85)
+C_WHITE, C_GREY, C_FAINT, C_ACCENT = fg(WHITE), fg(GREY), fg(FAINT), fg(ACCENT)
+ANSI_RE = re.compile(r"\033\[[0-9;?]*[a-zA-Z]")
+
+RAMP = ((0.0, OK), (0.5, (220, 200, 70)), (0.75, WARN), (1.0, BAD))
+
+
+def ramp(t):
+    """Green → yellow → amber → red for t in 0..1."""
+    t = max(0.0, min(1.0, t))
+    for (t0, c0), (t1, c1) in zip(RAMP, RAMP[1:]):
+        if t <= t1:
+            k = (t - t0) / (t1 - t0)
+            return tuple(int(c0[i] + (c1[i] - c0[i]) * k) for i in range(3))
+    return RAMP[-1][1]
+
+
+def vis_len(s):
+    return len(ANSI_RE.sub("", s))
+
+
+def trunc(s, w):
+    """Cut to w visible columns without breaking escape sequences."""
+    out, n, i = [], 0, 0
+    while i < len(s) and n < w:
+        m = ANSI_RE.match(s, i)
+        if m:
+            out.append(m.group())
+            i = m.end()
+            continue
+        out.append(s[i])
+        n += 1
+        i += 1
+    return "".join(out) + RST
+
+
+def fit(s, w):
+    """Exactly w columns: padded, or cut with an ellipsis."""
+    if vis_len(s) > w:
+        return trunc(s, max(0, w - 1)) + C_FAINT + "…" + RST
+    return s + " " * (w - vis_len(s))
+
+
+def rpad(s, w):
+    """Right-align into w columns (numbers line up under each other)."""
+    return " " * max(0, w - vis_len(s)) + s
+
+
+def wrap_segs(segs, width, sep="   "):
+    """Lay segments out over as many lines as needed; a segment wider than
+    the whole line is the only thing ever cut."""
+    lines, cur = [], ""
+    for seg in segs:
+        if not seg:
+            continue
+        cand = seg if not cur else cur + sep + seg
+        if vis_len(cand) <= width:
+            cur = cand
+            continue
+        if cur:
+            lines.append(cur)
+        cur = seg if vis_len(seg) <= width else fit(seg, width)
+    return lines + [cur] if cur else lines or [""]
+
+
+def words(text, rgb=GREY, bold=False):
+    """Prose as one segment per word, for wrap_segs(..., sep=" ")."""
+    pre = fg(rgb) + (BOLD if bold else "")
+    return [pre + wd + RST for wd in text.split()]
+
+
+def kv(label, value, rgb=WHITE):
+    """'label value' with the label muted: the basic unit of every line."""
+    return f"{C_GREY}{label}{RST} {fg(rgb)}{value}{RST}" if label else f"{fg(rgb)}{value}{RST}"
+
+
+def fmt_num(n):
+    n = float(n)
+    for unit, div in (("G", 1e9), ("M", 1e6), ("K", 1e3)):
+        if abs(n) >= div:
+            return f"{n / div:.1f}{unit}"
+    return f"{n:.0f}"
+
+
+def fmt_bytes(n):
+    """Binary units, the ones a disk or a memory figure is read in."""
+    n = float(n or 0)
+    for unit, div in (("TB", 1 << 40), ("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if abs(n) >= div:
+            v = n / div
+            return f"{v:.1f} {unit}" if v < 100 else f"{v:.0f} {unit}"
+    return f"{n:.0f} B"
+
+
+def fmt_rate(bps):
+    return fmt_bytes(bps) + "/s"
+
+
+def fmt_dur(sec):
+    sec = int(max(0, sec))
+    d, rem = divmod(sec, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m:02d}m"
+    return f"{m}m"
+
+
+def fmt_span(sec):
+    """Like fmt_dur, but a young history deserves seconds."""
+    return f"{int(sec)}s" if sec < 60 else fmt_dur(sec)
+
+
+def fmt_ago(sec):
+    return f"{int(sec)}s ago" if sec < 60 else f"{fmt_dur(sec)} ago"
+
+
+def fmt_clock(ts, now):
+    t = dt.datetime.fromtimestamp(ts)
+    same_day = t.date() == dt.datetime.fromtimestamp(now).date()
+    return t.strftime("%H:%M" if same_day else "%a %H:%M")
+
+
+def fmt_date(ts):
+    return dt.datetime.fromtimestamp(ts).strftime("%-d %b")
+
+
+NA = C_FAINT + "n/a" + RST
+
+
+# ── drawing primitives ────────────────────────────────────────────────────────
+LABEL_W = 12  # left label column, like a settings page
+
+
+def bar(pct, width):
+    """Thin progress bar; every filled cell takes the ramp color of its own
+    position, so the bar warms up as it fills."""
+    n = round(max(0.0, min(100.0, pct)) / 100 * width)
+    cells = "".join(fg(ramp(i / max(1, width - 1))) + "━" for i in range(n))
+    return cells + C_FAINT + "━" * (width - n) + RST
+
+
+def bar_pct(pct, width, invert=False):
+    """A bar with its own number behind it, in the color it has earned.
+
+    `invert` is for the one quantity where a full bar is good news: a charge
+    level of 100% is green, not red.
+    """
+    t = (100 - pct) / 100 if invert else pct / 100
+    n = round(max(0.0, min(100.0, pct)) / 100 * width)
+    track = "".join(fg(ramp((1 - i / max(1, width - 1)) if invert else i / max(1, width - 1)))
+                    + "━" for i in range(n))
+    track += C_FAINT + "━" * (width - n) + RST
+    return f"{track} {BOLD}{fg(ramp(t))}{pct:.0f}%{RST}"
+
+
+BLOCKS = " ▁▂▃▄▅▆▇█"
+
+
+def cell(frac, rgb=None):
+    """One eighth-block glyph for a 0..1 fraction, colored by the ramp."""
+    frac = max(0.0, min(1.0, frac))
+    ch = BLOCKS[max(1, min(8, int(round(frac * 8))))]
+    return fg(rgb or ramp(frac)) + ch + RST
+
+
+def nice_max(x):
+    """Round a chart ceiling up to a readable step (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 × 10^k)."""
+    if x <= 0:
+        return 1
+    mag = 10 ** math.floor(math.log10(x))
+    return next(m * mag for m in (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10) if m * mag >= x)
+
+
+def bar_chart(values, bw, h, vmax, rgb):
+    """Column chart: one bar per bucket, bw columns wide incl. a 1-col gap,
+    eighth blocks for sub-row precision. None = no data (left blank)."""
+    rows = []
+    for row in range(h, 0, -1):
+        cells = []
+        for v in values:
+            if v is None:
+                cells.append(" " * bw)
+                continue
+            fill = v / vmax * h
+            ch = "█" if fill >= row else BLOCKS[max(1, int((fill - row + 1) * 8))] if fill > row - 1 else " "
+            if row == 1 and ch == " ":
+                ch = "▁"  # a bar that exists never vanishes completely
+            cells.append(fg(rgb) + ch * max(1, bw - 1) + RST + " " * (1 if bw > 1 else 0))
+        rows.append("".join(cells))
+    return rows
+
+
+def section(title, meta, w):
+    """'TITLE  meta ───────' header that names what follows and its scope."""
+    head = f"{BOLD}{C_WHITE}{title.upper()}{RST}"
+    if meta:
+        head += f"  {C_GREY}{meta}{RST}"
+    head = fit(head, w) if vis_len(head) > w else head
+    rule = w - vis_len(head) - 1
+    return [head + (" " + C_FAINT + "─" * rule + RST if rule > 0 else "")]
+
+
+def line(label, content, w, label_rgb=GREY):
+    """Label column + content, always exactly w columns."""
+    lab = fg(label_rgb) + fit(label, LABEL_W - 1) + RST + " "
+    return lab + fit(content, w - LABEL_W)
+
+
+def block(label, segs, w, label_rgb=GREY, sep="   "):
+    """Label column + segments wrapped over as many lines as they need."""
+    return [line(label if i == 0 else "", l, w, label_rgb)
+            for i, l in enumerate(wrap_segs(segs, w - LABEL_W, sep))]
+
+
+def columns(blocks, w, gap=4):
+    """Place blocks (lists of lines rendered at their own width) side by side."""
+    blocks = [b for b in blocks if b]
+    if not blocks:
+        return []
+    h = max(len(b) for b in blocks)
+    widths = [max((vis_len(l) for l in b), default=0) for b in blocks]
+    return [(" " * gap).join(fit(b[i] if i < len(b) else "", bw) for b, bw in zip(blocks, widths))
+            for i in range(h)]
+
+
+def split_w(w, n, gap=4):
+    base = (w - gap * (n - 1)) // n
+    return [base] * (n - 1) + [w - gap * (n - 1) - base * (n - 1)]
+
+
+def axis(labels, cw):
+    """Time labels under a chart, placed so they never touch."""
+    row = [" "] * cw
+    placed = []
+    for pos, text in labels:
+        start = max(0, min(cw - len(text), pos - len(text) // 2 if 0 < pos < cw else
+                           (pos - len(text) if pos >= cw else pos)))
+        if any(start < e + 2 and s < start + len(text) + 2 for s, e in placed):
+            continue
+        row[start:start + len(text)] = list(text)
+        placed.append((start, start + len(text)))
+    return C_FAINT + "".join(row).rstrip() + RST
+
+
+# ── history ───────────────────────────────────────────────────────────────────
+class Ring:
+    """A fixed-length series of samples, oldest first, with the sample
+    interval remembered so a chart can label its own time axis."""
+
+    def __init__(self, interval):
+        self.v, self.interval = [], interval
+
+    def push(self, value):
+        self.v.append(value)
+        if len(self.v) > HISTORY:
+            del self.v[:len(self.v) - HISTORY]
+
+    def last(self, default=0.0):
+        return self.v[-1] if self.v else default
+
+    def buckets(self, n):
+        """n averages covering the whole history, newest bucket last."""
+        if not self.v:
+            return [None] * n, 0
+        per = max(1, math.ceil(len(self.v) / n))
+        out, tail = [], list(self.v)
+        while tail and len(out) < n:
+            chunk = tail[-per:]
+            del tail[-per:]
+            real = [x for x in chunk if x is not None]
+            out.append(sum(real) / len(real) if real else None)
+        out.reverse()
+        return [None] * (n - len(out)) + out, per * self.interval * len(out)
+
+
+def chart(rings, w, h, fmtf, rgbs, labels=None):
+    """One chart for one or two series, with a ceiling, a legend and a
+    time axis. Two series share a ceiling so they stay comparable."""
+    cw = max(8, w - LABEL_W)
+    bw = 2 if cw >= 24 else 1
+    n = max(1, cw // bw)
+    series = [r.buckets(n) for r in rings]
+    vmax = nice_max(max((v for vals, _ in series for v in vals if v is not None), default=0))
+    out = []
+    for (vals, _), rgb in zip(series, rgbs):
+        out += bar_chart(vals, bw, h, vmax, rgb)
+    span = max((s for _, s in series), default=0)
+    ticks = [(0, "-" + fmt_span(span)), (cw, "now")]
+    if cw >= 40 and span >= 120:
+        ticks.insert(1, (cw // 2, "-" + fmt_span(span / 2)))
+    rows = [line("", r, w) for r in out]
+    rows.append(line("", axis(ticks, cw), w))
+    head = kv("peak", fmtf(vmax), WHITE)
+    if labels:
+        head += "   " + "   ".join(f"{fg(c)}━{RST} {C_GREY}{t}{RST}" for t, c in zip(labels, rgbs))
+    return [line("", head, w)] + rows
+
+
+# ── platform: Mach and sysctl, the same calls the widget makes ────────────────
+_LIB = ctypes.CDLL(ctypes.util.find_library("System") or "libSystem.dylib", use_errno=True) \
+    if DARWIN else None
+
+_NAT, _U64 = ctypes.c_uint32, ctypes.c_uint64
+
+
+class VmStatistics64(ctypes.Structure):
+    """mach/vm_statistics.h; field order verified against `vm_stat`."""
+    _fields_ = [
+        ("free", _NAT), ("active", _NAT), ("inactive", _NAT), ("wire", _NAT),
+        ("zero_fill", _U64), ("reactivations", _U64), ("pageins", _U64), ("pageouts", _U64),
+        ("faults", _U64), ("cow_faults", _U64), ("lookups", _U64), ("hits", _U64),
+        ("purges", _U64), ("purgeable", _NAT), ("speculative", _NAT),
+        ("decompressions", _U64), ("compressions", _U64), ("swapins", _U64), ("swapouts", _U64),
+        ("compressor", _NAT), ("throttled", _NAT), ("external", _NAT), ("internal", _NAT),
+        ("total_uncompressed", _U64),
+    ]
+
+
+HOST_CPU_LOAD_INFO, HOST_VM_INFO64 = 3, 4
+PROCESSOR_CPU_LOAD_INFO = 2
+
+
+def _host():
+    return _LIB.mach_host_self()
+
+
+def sysctl_str(name):
+    if not DARWIN:
+        return None
+    size = ctypes.c_size_t(0)
+    key = name.encode()
+    if _LIB.sysctlbyname(key, None, ctypes.byref(size), None, 0) != 0 or not size.value:
+        return None
+    buf = ctypes.create_string_buffer(size.value)
+    if _LIB.sysctlbyname(key, buf, ctypes.byref(size), None, 0) != 0:
+        return None
+    return buf.value.decode(errors="replace") or None
+
+
+def sysctl_int(name):
+    if not DARWIN:
+        return None
+    val, size = ctypes.c_int64(0), ctypes.c_size_t(8)
+    if _LIB.sysctlbyname(name.encode(), ctypes.byref(val), ctypes.byref(size), None, 0) != 0:
+        return None
+    return val.value
+
+
+def boot_time():
+    """kern.boottime is a struct timeval; only the seconds matter here."""
+    if not DARWIN:
+        return None
+    buf = (ctypes.c_int64 * 2)()
+    size = ctypes.c_size_t(ctypes.sizeof(buf))
+    if _LIB.sysctlbyname(b"kern.boottime", buf, ctypes.byref(size), None, 0) != 0:
+        return None
+    return buf[0] or None
+
+
+def vm_pages():
+    """Raw VM page counters, the numbers behind Activity Monitor's memory tab."""
+    if not DARWIN:
+        return None
+    st = VmStatistics64()
+    cnt = ctypes.c_uint32(ctypes.sizeof(st) // 4)
+    if _LIB.host_statistics64(_host(), HOST_VM_INFO64, ctypes.byref(st), ctypes.byref(cnt)) != 0:
+        return None
+    return st
+
+
+def cpu_ticks():
+    """Cumulative scheduler ticks since boot: user, system, idle, nice."""
+    if not DARWIN:
+        return None
+    raw = (ctypes.c_uint32 * 4)()
+    cnt = ctypes.c_uint32(4)
+    if _LIB.host_statistics(_host(), HOST_CPU_LOAD_INFO, raw, ctypes.byref(cnt)) != 0:
+        return None
+    return tuple(raw)
+
+
+def per_core_ticks():
+    """The same four counters per logical core, via host_processor_info."""
+    if not DARWIN:
+        return []
+    _LIB.host_processor_info.restype = ctypes.c_int
+    count = ctypes.c_uint32(0)
+    info = ctypes.POINTER(ctypes.c_int32)()
+    info_cnt = ctypes.c_uint32(0)
+    kr = _LIB.host_processor_info(_host(), PROCESSOR_CPU_LOAD_INFO,
+                                 ctypes.byref(count), ctypes.byref(info),
+                                 ctypes.byref(info_cnt))
+    if kr != 0 or not info:
+        return []
+    try:
+        flat = [info[i] & 0xFFFFFFFF for i in range(info_cnt.value)]
+    finally:  # the kernel allocated this buffer in our address space
+        _LIB.vm_deallocate(_LIB.mach_task_self(), ctypes.cast(info, ctypes.c_void_p),
+                           ctypes.c_size_t(info_cnt.value * 4))
+    return [tuple(flat[i:i + 4]) for i in range(0, len(flat) - 3, 4)]
+
+
+PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 16384
+
+
+def delta_split(now, prev):
+    """Turn two tick samples into user/system/idle/nice percentages."""
+    if not now or not prev:
+        return None
+    d = [a - b for a, b in zip(now, prev)]
+    if any(x < 0 for x in d):
+        return None
+    total = sum(d)
+    if total <= 0:
+        return None
+    return tuple(x * 100.0 / total for x in d)
+
+
+# ── platform: the commands, all of them off the render path ───────────────────
+def run(*argv, timeout=8):
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return p.stdout if p.returncode == 0 or p.stdout else None
+
+
+def ioreg_pairs(text):
+    """Every "key"=number in an ioreg dump, flattened."""
+    return {m.group(1): int(m.group(2))
+            for m in re.finditer(r'"([^"]+)"\s*=\s*(-?\d+)', text or "")}
+
+
+def read_gpu():
+    """IOAccelerator's PerformanceStatistics — the widget's GPU source."""
+    text = run("/usr/sbin/ioreg", "-r", "-d", "1", "-c", "IOAccelerator")
+    if not text:
+        return {}
+    p = ioreg_pairs(text)
+    return {
+        "usage": p.get("Device Utilization %"),
+        "renderer": p.get("Renderer Utilization %"),
+        "tiler": p.get("Tiler Utilization %"),
+        "alloc": p.get("Alloc system memory"),
+        "in_use": p.get("In use system memory"),
+        "name": (re.search(r'"model"\s*=\s*<"([^"]+)"', text) or [None, None])[1],
+        "cores": p.get("gpu-core-count"),
+    }
+
+
+def read_disk_io():
+    """Cumulative bytes from every block storage driver, for a delta."""
+    text = run("/usr/sbin/ioreg", "-c", "IOBlockStorageDriver", "-r", "-d1", "-w0")
+    if not text:
+        return None
+    read = write = 0
+    for stats in re.findall(r'"Statistics"\s*=\s*\{([^}]*)\}', text):
+        p = ioreg_pairs("{" + stats + "}")
+        read += p.get("Bytes (Read)", 0)
+        write += p.get("Bytes (Write)", 0)
+    return {"read": read, "write": write}
+
+
+def read_disk_space():
+    """APFS puts the writable volume aside from the sealed system root."""
+    for path in ("/System/Volumes/Data", "/"):
+        try:
+            st = os.statvfs(path)
+        except OSError:
+            continue
+        return {"total": st.f_blocks * st.f_frsize,
+                "free": st.f_bavail * st.f_frsize,
+                "path": path}
+    return None
+
+
+def read_battery():
+    """AppleSmartBattery, plus pmset for the name of the current power source."""
+    text = run("/usr/sbin/ioreg", "-rn", "AppleSmartBattery")
+    if not text:
+        return {"present": False}
+    p = ioreg_pairs(text)
+    present = "CurrentCapacity" in p
+    out = {"present": present}
+    if not present:
+        return out
+    level = float(p.get("CurrentCapacity", 0))
+    voltage_mv = float(p.get("Voltage", 0))
+    amperage_ua = float(p.get("InstantAmperage", p.get("Amperage", 0)))
+    # Apple reports current flowing *into* the battery, and mV × µA is 1e-9 W.
+    watts = -(voltage_mv * amperage_ua) / 1e9
+    design = float(p.get("DesignCapacity", 0))
+    health = max(0.0, min(100.0, float(p.get("MaxCapacity", 100))))
+    max_mah = design * health / 100 if design else 0.0
+    now_mah = max_mah * level / 100
+    out.update({
+        "level": level,
+        "charging": "IsCharging" in text and bool(re.search(r'"IsCharging"\s*=\s*Yes', text)),
+        "ac": bool(re.search(r'"ExternalConnected"\s*=\s*Yes', text)),
+        "watts": watts,
+        "voltage_mv": voltage_mv,
+        "amperage_ma": amperage_ua / 1000,
+        "health": health,
+        "cycles": p.get("CycleCount"),
+        "design_mah": design,
+        "now_mah": now_mah,
+        # Centi-degrees Celsius: the sibling VirtualTemperature only makes
+        # sense in the same unit, and as tenths of a Kelvin it would read 78 °C.
+        "temp_c": p.get("Temperature") / 100 if p.get("Temperature") else None,
+    })
+    remaining = None
+    if voltage_mv > 1 and max_mah > 0:
+        now_wh = now_mah * voltage_mv / 1e6
+        max_wh = max_mah * voltage_mv / 1e6
+        if not out["ac"] and watts > 0.5:
+            remaining = min(172800, now_wh / watts * 3600)
+        elif out["charging"] and abs(watts) > 0.5:
+            remaining = min(172800, max(0.0, max_wh - now_wh) / abs(watts) * 3600)
+    out["remaining"] = remaining
+    return out
+
+
+HEADER_COLS = ("Name", "Mtu", "Network", "Address", "Ipkts", "Ierrs", "Ibytes",
+               "Opkts", "Oerrs", "Obytes", "Coll")
+
+
+def read_net_counters():
+    """Per-interface cumulative byte counters from `netstat -ib`.
+
+    Only the `<Link#n>` rows are taken: the per-address rows that follow
+    repeat the same counters and would double every interface.
+    """
+    text = run("/usr/sbin/netstat", "-ibn")
+    if not text:
+        return None
+    lines = text.splitlines()
+    header = lines[0].split() if lines else list(HEADER_COLS)
+    try:
+        i_in, i_out = header.index("Ibytes"), header.index("Obytes")
+    except ValueError:
+        i_in, i_out = 6, 9
+    out = {}
+    for row in lines[1:]:
+        toks = row.split()
+        if len(toks) < 7 or "<Link#" not in row:
+            continue
+        # The Address column is empty on most link rows, which shifts
+        # everything after it left by one.
+        off = len(header) - len(toks)
+        try:
+            total_in, total_out = int(toks[i_in - off]), int(toks[i_out - off])
+        except (IndexError, ValueError):
+            continue
+        name = toks[0]
+        if name in out:  # a second link row for the same device: keep the larger
+            total_in = max(total_in, out[name]["in"])
+            total_out = max(total_out, out[name]["out"])
+        out[name] = {"in": total_in, "out": total_out}
+    return out
+
+
+def read_links():
+    """Addresses, state and human names of the interfaces, plus the route out."""
+    ports, dev = {}, None
+    for raw in (run("/usr/sbin/networksetup", "-listallhardwareports") or "").splitlines():
+        if raw.startswith("Hardware Port:"):
+            dev = raw.split(":", 1)[1].strip()
+        elif raw.startswith("Device:") and dev:
+            ports[raw.split(":", 1)[1].strip()] = dev
+            dev = None
+
+    links, cur = {}, None
+    for raw in (run("/sbin/ifconfig", "-a") or "").splitlines():
+        if raw and not raw[0].isspace():
+            cur = raw.split(":", 1)[0]
+            links[cur] = {"name": cur, "label": ports.get(cur, ""), "ipv4": None,
+                          "active": "RUNNING" in raw}
+        elif cur:
+            tok = raw.split()
+            if tok and tok[0] == "inet" and len(tok) > 1 and not links[cur]["ipv4"]:
+                links[cur]["ipv4"] = tok[1]
+            elif tok and tok[0] == "status:":
+                links[cur]["active"] = tok[1] == "active"
+
+    route = run("/sbin/route", "-n", "get", "default") or ""
+    primary = (re.search(r"interface:\s*(\S+)", route) or [None, None])[1]
+    gateway = (re.search(r"gateway:\s*(\S+)", route) or [None, None])[1]
+    for info in links.values():
+        info["label"] = info["label"] or info["name"]
+        info["kind"] = kind_of(info["name"], info["label"])
+    return {"links": links, "primary": primary, "gateway": gateway}
+
+
+def kind_of(dev, label):
+    """What sort of link this is, from its port name first and its device
+    prefix second — the same order the widget uses."""
+    l = (label or "").lower()
+    if "wi-fi" in l or "airport" in l or "wlan" in l:
+        return "wifi"
+    if dev.startswith(("utun", "ipsec", "ppp", "gpd", "tun", "tap", "wg")):
+        return "vpn"
+    if any(k in l for k in ("ethernet", "lan", "thunderbolt", "usb")):
+        return "ethernet"
+    if dev.startswith(("bridge", "awdl", "llw", "anpi", "gif", "stf", "ap")):
+        return "other"
+    if dev.startswith("en"):
+        return "ethernet"
+    return "other"
+
+
+#: Loopback, AirDrop (awdl), low-latency (llw) and the baseband link carry
+#: traffic that is not what "my connection" means, so they are left out of
+#: both the totals and the interface list.
+SKIP_PREFIX = ("awdl", "llw", "anpi", "gif", "stf", "bridge", "utun1030")
+
+
+def skip_iface(name):
+    return name == "lo0" or name.startswith(SKIP_PREFIX)
+
+
+PLACEHOLDER = re.compile(r"^<.*>$")
+
+
+def read_ssid(dev):
+    """The Wi-Fi name, when macOS is willing to say it.
+
+    Without Location Services permission for the terminal, macOS answers with
+    the literal string `<redacted>` rather than an error — so a placeholder is
+    not a missing network, it is a missing permission.
+    """
+    if not dev:
+        return None, False
+    text = run("/usr/sbin/ipconfig", "getsummary", dev) or ""
+    m = re.search(r"^\s*SSID\s*:\s*(.+?)\s*$", text, re.M)
+    if not m:
+        return None, False
+    value = m.group(1)
+    if PLACEHOLDER.match(value):
+        return None, True  # the name exists, the permission does not
+    return value, False
+
+
+def read_public_ip():
+    """The one reading that cannot come from the machine itself: one plain
+    request to api.ipify.org, the same endpoint the widget uses."""
+    text = run("/usr/bin/curl", "--silent", "--fail", "--max-time", "5",
+               "https://api.ipify.org", timeout=8)
+    value = (text or "").strip()
+    if not value or len(value) > 45 or not all(c.isalnum() or c in ".:" for c in value):
+        return None
+    return value
+
+
+def read_talkers(limit=5):
+    """Per-process network rates via `nettop`.
+
+    There is no public API for this, and `-d` makes each sample a delta, so
+    the call blocks for about a second: it belongs on a background thread.
+    `-t external` keeps loopback out — traffic between two local processes is
+    not what "who is using my connection" means.
+    """
+    text = run("/usr/bin/nettop", "-P", "-x", "-d", "-L", "2", "-s", "1",
+               "-t", "external", "-J", "bytes_in,bytes_out", timeout=12)
+    header = ",bytes_in,bytes_out,"
+    if not text or header not in text:
+        return []
+    found = []
+    for raw in text[text.rfind(header) + len(header):].splitlines():
+        parts = raw.strip().split(",")
+        if len(parts) < 3:
+            continue
+        who, down, up = parts[0], parts[1], parts[2]
+        # "Google Chrome H.4928" — the name itself may contain dots, so the
+        # pid is whatever follows the last one.
+        name, _, pid = who.rpartition(".")
+        try:
+            down, up = float(down), float(up)
+        except ValueError:
+            continue
+        if not name or down + up <= 0:
+            continue
+        found.append({"name": name, "pid": pid, "down": down, "up": up})
+    found.sort(key=lambda t: t["down"] + t["up"], reverse=True)
+    return found[:limit]
+
+
+PS_TIME = re.compile(r"^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$")
+
+
+def _cputime(s):
+    m = PS_TIME.match(s)
+    if not m:
+        return None
+    d, h, mi, sec = m.groups()
+    return (int(d or 0) * 86400 + int(h or 0) * 3600 + int(mi) * 60 + float(sec))
+
+
+def read_processes():
+    """pid, resident size and cumulative CPU time for every process.
+
+    `ps` reports %CPU as a lifetime average, which says nothing about what is
+    busy *now*; two samples of the cumulative CPU time do, and that is what
+    Activity Monitor shows.
+    """
+    text = run("/bin/ps", "-Aceo", "pid=,rss=,time=,comm=")
+    if not text:
+        return None
+    out = {}
+    for raw in text.splitlines():
+        parts = raw.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, rss, tm, name = parts
+        cpu_s = _cputime(tm)
+        if cpu_s is None:
+            continue
+        out[pid] = {"rss": int(rss) * 1024, "cpu_s": cpu_s,
+                    "name": os.path.basename(name.strip())}
+    return out
+
+
+# ── sampler ───────────────────────────────────────────────────────────────────
+class Sampler:
+    """Fast metrics on the caller's thread, everything else on two workers.
+
+    One worker runs the quick commands on their own schedules; a second one is
+    reserved for the two calls that block for a second or more, so a slow
+    `nettop` never holds up the GPU or the process list.
+    """
+
+    MIN_PROC_DT = 1.0  # seconds between two `ps` samples before a rate means anything
+
+    FAST = (("net", 0), ("gpu", 2.0), ("procs", 3.0), ("diskio", 2.0),
+            ("space", 10.0), ("power", 15.0), ("links", 20.0), ("ssid", 20.0))
+    SLOW = (("talkers", 10.0), ("pubip", 300.0))
+
+    def __init__(self, interval, no_net_calls=False):
+        self.interval = interval
+        self.no_net_calls = no_net_calls
+        self.lock = threading.Lock()
+        self.data, self.stamp, self.due = {}, {}, {}
+        self.stop = threading.Event()
+        self.wake = threading.Event()
+
+        self.prev_ticks = cpu_ticks()
+        self.prev_cores = per_core_ticks()
+        self.prev_net = None
+        self.prev_disk = None
+        self.prev_procs = None
+        self.prev_procs_at = None
+        self.split = (0.0, 0.0, 100.0, 0.0)
+        self.cores = []
+        self.net_rate = {}
+        self.disk_rate = {"read": 0.0, "write": 0.0}
+        self.procs = []
+        self.procs_by_mem = []
+        self.proc_count = 0
+        self.charged_at = None
+        self.seen_charging = False
+        self.mem = None
+        self.net_totals = (0.0, 0.0)
+        self.started = time.time()
+
+        self.r = {k: Ring(interval) for k in
+                  ("cpu", "mem", "gpu", "down", "up", "dread", "dwrite", "batt", "free")}
+        self.meta = self._meta()
+
+    # -- static facts, read once
+    def _meta(self):
+        clusters = (sysctl_int("hw.perflevel0.physicalcpu") or 0,
+                    sysctl_int("hw.perflevel1.physicalcpu") or 0)
+        return {
+            "chip": sysctl_str("machdep.cpu.brand_string") or sysctl_str("hw.model") or "unknown",
+            "model": sysctl_str("hw.model") or "",
+            "macos": sysctl_str("kern.osproductversion") or "",
+            "build": sysctl_str("kern.osversion") or "",
+            "host": (sysctl_str("kern.hostname") or "").split(".")[0],
+            "arch": os.uname().machine,
+            "physical": sysctl_int("hw.physicalcpu") or 0,
+            "logical": sysctl_int("hw.logicalcpu") or os.cpu_count() or 0,
+            "perf": clusters[0],
+            "eff": clusters[1],
+            "memsize": sysctl_int("hw.memsize") or 0,
+            "boot": boot_time(),
+        }
+
+    def start(self):
+        for name, fn in (("fast", self._fast_loop), ("slow", self._slow_loop)):
+            t = threading.Thread(target=fn, name=f"flash-top-{name}", daemon=True)
+            t.start()
+
+    def shutdown(self):
+        self.stop.set()
+        self.wake.set()
+
+    def age(self, key):
+        with self.lock:
+            at = self.stamp.get(key)
+        return None if at is None else time.time() - at
+
+    def get(self, key, default=None):
+        with self.lock:
+            return self.data.get(key, default)
+
+    def refresh_now(self):
+        """Make every cached source due again (the `r` key)."""
+        with self.lock:
+            self.due.clear()
+        self.wake.set()
+
+    # -- worker loops
+    def _collect(self, key):
+        try:
+            value = {
+                "net": read_net_counters,
+                "gpu": read_gpu,
+                "procs": read_processes,
+                "diskio": read_disk_io,
+                "space": read_disk_space,
+                "power": read_battery,
+                "links": read_links,
+                "talkers": read_talkers,
+                "pubip": read_public_ip,
+            }[key]() if key != "ssid" else self._collect_ssid()
+        except Exception:  # a dashboard is not worth a crash over one source
+            return
+        if value is None:
+            with self.lock:  # keep the previous value, only note the attempt
+                self.due[key] = time.time()
+            return
+        with self.lock:
+            self.data[key] = value
+            self.stamp[key] = self.due[key] = time.time()
+        if key in ("net", "diskio", "procs"):
+            self._derive(key)
+
+    def _collect_ssid(self):
+        links = self.get("links") or {}
+        dev = links.get("primary")
+        kind = (links.get("links", {}).get(dev) or {}).get("kind")
+        if kind != "wifi":
+            return {"ssid": None, "blocked": False}
+        ssid, blocked = read_ssid(dev)
+        return {"ssid": ssid, "blocked": blocked}
+
+    def _loop(self, plan):
+        while not self.stop.is_set():
+            now = time.time()
+            wait = 5.0
+            for key, every in plan:
+                every = every or self.interval
+                with self.lock:
+                    last = self.due.get(key, 0)
+                if now - last >= every:
+                    self._collect(key)
+                    now = time.time()
+                else:
+                    wait = min(wait, every - (now - last))
+            self.wake.wait(max(0.2, wait))
+            self.wake.clear()
+
+    def _fast_loop(self):
+        self._loop(self.FAST)
+
+    def _slow_loop(self):
+        plan = [p for p in self.SLOW if not (self.no_net_calls and p[0] == "pubip")]
+        self._loop(plan)
+
+    # -- rates derived from two consecutive samples of a counter
+    def _derive(self, key):
+        now = time.time()
+        if key == "net":
+            cur = self.get("net") or {}
+            prev, self.prev_net = self.prev_net, (now, cur)
+            if prev:
+                dt_s = max(1e-3, now - prev[0])
+                self.net_rate = {
+                    name: {"down": max(0, v["in"] - prev[1][name]["in"]) / dt_s,
+                           "up": max(0, v["out"] - prev[1][name]["out"]) / dt_s}
+                    for name, v in cur.items() if name in prev[1]
+                }
+        elif key == "diskio":
+            cur = self.get("diskio") or {}
+            prev, self.prev_disk = self.prev_disk, (now, cur)
+            if prev and cur:
+                dt_s = max(1e-3, now - prev[0])
+                self.disk_rate = {
+                    "read": max(0, cur["read"] - prev[1]["read"]) / dt_s,
+                    "write": max(0, cur["write"] - prev[1]["write"]) / dt_s,
+                }
+        elif key == "procs":
+            cur = self.get("procs") or {}
+            prev, prev_at = self.prev_procs, self.prev_procs_at
+            self.proc_count = len(cur)
+            if prev_at and now - prev_at < self.MIN_PROC_DT:
+                return  # too soon to tell; keep the older sample to compare against
+            self.prev_procs, self.prev_procs_at = cur, now
+            if prev and prev_at:
+                dt_s = max(1e-3, now - prev_at)
+                rows = []
+                for pid, p in cur.items():
+                    was = prev.get(pid)
+                    busy = (p["cpu_s"] - was["cpu_s"]) / dt_s * 100 if was else 0.0
+                    rows.append({"pid": pid, "name": p["name"],
+                                 "cpu": max(0.0, busy), "rss": p["rss"]})
+                self.procs = sorted(rows, key=lambda r: r["cpu"], reverse=True)[:8]
+                self.procs_by_mem = sorted(rows, key=lambda r: r["rss"], reverse=True)[:8]
+
+    # -- the fast path, called once per frame
+    def tick(self):
+        ticks = cpu_ticks()
+        split = delta_split(ticks, self.prev_ticks)
+        if split:
+            self.split = split
+        if ticks:
+            self.prev_ticks = ticks
+
+        cores = per_core_ticks()
+        if cores and len(cores) == len(self.prev_cores):
+            busy = []
+            for now_c, prev_c in zip(cores, self.prev_cores):
+                s = delta_split(now_c, prev_c)
+                busy.append(100.0 - s[2] if s else 0.0)
+            self.cores = busy
+        if cores:
+            self.prev_cores = cores
+
+        self.mem = self._memory()
+        gpu = self.get("gpu") or {}
+        space = self.get("space") or {}
+        power = self.get("power") or {}
+
+        # A time is only honest if we watched the transition: a battery that
+        # was already full when the dashboard started finished charging at
+        # some unknown hour, and saying "now" would be a lie.
+        if power.get("charging"):
+            self.seen_charging, self.charged_at = True, None
+        elif self.seen_charging and power.get("level", 0) >= 99 and self.charged_at is None:
+            self.charged_at = time.time()
+
+        down = sum(v["down"] for n, v in self.net_rate.items() if not skip_iface(n))
+        up = sum(v["up"] for n, v in self.net_rate.items() if not skip_iface(n))
+        self.net_totals = (down, up)
+
+        self.r["cpu"].push(100.0 - self.split[2])
+        self.r["mem"].push(self.mem["percent"] if self.mem else None)
+        self.r["gpu"].push(float(gpu["usage"]) if gpu.get("usage") is not None else None)
+        self.r["down"].push(down)
+        self.r["up"].push(up)
+        self.r["dread"].push(self.disk_rate["read"])
+        self.r["dwrite"].push(self.disk_rate["write"])
+        self.r["batt"].push(power.get("level") if power.get("present") else None)
+        self.r["free"].push(space.get("free"))
+
+    def real_links(self):
+        """The interfaces worth showing: addressed or moving bytes, and not
+        one of the internal radios macOS keeps up for AirDrop and friends."""
+        links = (self.get("links") or {}).get("links", {})
+        primary = (self.get("links") or {}).get("primary")
+        out = []
+        for name, info in links.items():
+            if skip_iface(name):
+                continue
+            rate = self.net_rate.get(name, {"down": 0.0, "up": 0.0})
+            counters = (self.get("net") or {}).get(name, {"in": 0, "out": 0})
+            # An address or live traffic. Lifetime bytes are not enough: the
+            # idle utun stubs and the VM bridges all carry a few stale bytes
+            # and would otherwise fill the table.
+            if not info.get("ipv4") and rate["down"] + rate["up"] <= 0:
+                continue
+            out.append({**info, **rate, "total_in": counters["in"],
+                        "total_out": counters["out"], "primary": name == primary})
+        out.sort(key=lambda i: (not i["primary"], -(i["down"] + i["up"]), i["name"]))
+        return out
+
+    def _memory(self):
+        """Activity Monitor's buckets, computed the way the widget computes
+        them: app = anonymous minus wired, and used is what cannot simply be
+        handed back (app + wired + compressor)."""
+        v = vm_pages()
+        total = self.meta["memsize"]
+        if not v or not total:
+            return None
+        wired = v.wire * PAGE
+        app = max(0, v.internal - v.wire) * PAGE
+        cached = (v.external - min(v.external, v.purgeable)) * PAGE + v.purgeable * PAGE // 2
+        compressed = v.compressor * PAGE
+        used = app + wired + compressed
+        free = v.free * PAGE
+        # Memory pressure: how much easily reclaimable memory is left against
+        # a target of a fifth of the machine, with floors for a busy
+        # compressor, since that is the signal the kernel itself reacts to.
+        headroom = free + (v.external + v.purgeable + v.speculative) * PAGE
+        target = total * 0.2
+        pressure = 1.0 - min(1.0, headroom / target) if target else 0.0
+        if used > total * 0.9:
+            pressure = max(pressure, 0.3)
+        if compressed > total / 10:
+            pressure = max(pressure, 0.45)
+        return {
+            "total": total, "used": used, "free": total - used, "app": app,
+            "wired": wired, "compressed": compressed,
+            "uncompressed": v.total_uncompressed * PAGE, "cached": cached,
+            "percent": used * 100.0 / total,
+            "pressure": max(0.0, min(1.0, pressure)) * 100,
+            "swapins": v.swapins, "swapouts": v.swapouts,
+        }
+
+
+# ── sections ──────────────────────────────────────────────────────────────────
+def meta_age(s, key, source):
+    age = s.age(key)
+    return f"{source} · {'…' if age is None else fmt_ago(age)}"
+
+
+def system_section(s, w, now):
+    m = s.meta
+    out = section("system", f"sysctl · {s.meta['macos']}", w)
+    out += block("machine", [
+        kv("", m["chip"], WHITE),
+        kv("macOS", f"{m['macos']} ({m['build']})"),
+        kv("arch", m["arch"]),
+        kv("model", m["model"]),
+    ], w)
+    cores = f"{m['logical']} logical"
+    if m["perf"] or m["eff"]:
+        cores += f" · {m['perf']}P + {m['eff']}E"
+    load = os.getloadavg()
+    out += block("load", [
+        kv("cores", cores),
+        kv("load", f"{load[0]:.2f}  {load[1]:.2f}  {load[2]:.2f}"),
+        kv("processes", str(s.proc_count or "…")),
+    ], w)
+    if m["boot"]:
+        out += block("uptime", [
+            kv("", fmt_dur(now - m["boot"]), WHITE),
+            kv("since", fmt_clock(m["boot"], now)),
+        ], w)
+    return out
+
+
+def cpu_section(s, w):
+    u, sy, idle, nice = s.split
+    busy = 100.0 - idle
+    bw = max(10, min(32, w - LABEL_W - 8))
+    out = section("cpu", "mach host_statistics · live", w)
+    out += [line("total", bar_pct(busy, bw), w)]
+    out += block("split", [
+        kv("user", f"{u:4.1f}%", ACCENT),
+        kv("system", f"{sy:4.1f}%", ROSE),
+        kv("idle", f"{idle:4.1f}%", GREY),
+        kv("nice", f"{nice:4.1f}%", GREY),
+    ], w)
+    if s.cores:
+        eff_first = s.meta["eff"] and s.meta["eff"] <= len(s.cores)
+        # On Apple Silicon the efficiency cluster holds the low core ids.
+        n_eff = s.meta["eff"] if eff_first else 0
+        groups = []
+        if n_eff:
+            groups.append(("E", s.cores[:n_eff]))
+            groups.append(("P", s.cores[n_eff:]))
+        else:
+            groups.append(("", s.cores))
+        segs = []
+        for tag, vals in groups:
+            glyphs = "".join(cell(v / 100) for v in vals)
+            segs.append((f"{C_GREY}{tag}{RST} " if tag else "") + glyphs)
+        out += block("cores", segs, w)
+        out += block("", [kv("busiest", f"{max(s.cores):.0f}%"),
+                          kv("average", f"{sum(s.cores) / len(s.cores):.0f}%")], w)
+    out += chart([s.r["cpu"]], w, 4, lambda v: f"{v:.0f}%", [ACCENT])
+    return out
+
+
+def memory_section(s, w):
+    m = s.mem
+    out = section("memory", "mach vm_statistics64 · live", w)
+    if not m:
+        return out + [line("", NA, w)]
+    bw = max(10, min(32, w - LABEL_W - 8))
+    out += [line("used", bar_pct(m["percent"], bw), w)]
+    out += block("", [
+        kv("", f"{fmt_bytes(m['used'])} of {fmt_bytes(m['total'])}", WHITE),
+        kv("free", fmt_bytes(m["free"])),
+    ], w)
+    out += block("breakdown", [
+        kv("app", fmt_bytes(m["app"]), ACCENT),
+        kv("wired", fmt_bytes(m["wired"]), TEAL),
+        kv("compressed", fmt_bytes(m["compressed"]), ROSE),
+        kv("cached", fmt_bytes(m["cached"]), GREY),
+    ], w)
+    press = m["pressure"]
+    out += block("pressure", [
+        f"{bar(press, max(8, min(20, w - LABEL_W - 26)))} "
+        f"{BOLD}{fg(ramp(press / 100))}{press:.0f}%{RST}",
+        kv("holds", fmt_bytes(m["uncompressed"]) + " uncompressed", GREY),
+    ], w)
+    out += chart([s.r["mem"]], w, 4, lambda v: f"{v:.0f}%", [ACCENT])
+    if s.procs_by_mem:
+        out += [line("", "", w)]
+        out += proc_table(s.procs_by_mem[:5], w, by="rss", title="top by memory")
+    return out
+
+
+def gpu_section(s, w):
+    g = s.get("gpu") or {}
+    out = section("gpu", meta_age(s, "gpu", "ioreg IOAccelerator"), w)
+    if g.get("usage") is None:
+        return out + [line("", NA, w)]
+    bw = max(10, min(32, w - LABEL_W - 8))
+    out += [line("device", bar_pct(float(g["usage"]), bw), w)]
+    segs = []
+    if g.get("renderer") is not None:
+        segs.append(kv("renderer", f"{g['renderer']}%"))
+    if g.get("tiler") is not None:
+        segs.append(kv("tiler", f"{g['tiler']}%"))
+    if g.get("cores"):
+        segs.append(kv("cores", str(g["cores"])))
+    if segs:
+        out += block("detail", segs, w)
+    mem = []
+    if g.get("alloc"):
+        mem.append(kv("allocated", fmt_bytes(g["alloc"])))
+    if g.get("in_use"):
+        mem.append(kv("in use", fmt_bytes(g["in_use"])))
+    if mem:
+        out += block("memory", mem, w)
+    out += chart([s.r["gpu"]], w, 4, lambda v: f"{v:.0f}%", [ACCENT])
+    return out
+
+
+def disk_section(s, w, now):
+    sp = s.get("space") or {}
+    out = section("disk", meta_age(s, "diskio", "statvfs + ioreg"), w)
+    if sp.get("total"):
+        used_pct = (sp["total"] - sp["free"]) * 100.0 / sp["total"]
+        bw = max(10, min(32, w - LABEL_W - 8))
+        out += [line("capacity", bar_pct(used_pct, bw), w)]
+        out += block("", [
+            kv("", f"{fmt_bytes(sp['total'] - sp['free'])} of {fmt_bytes(sp['total'])}", WHITE),
+            kv("free", fmt_bytes(sp["free"])),
+            kv("volume", sp.get("path", "/")),
+        ], w)
+    out += block("activity", [
+        kv("read", fmt_rate(s.disk_rate["read"]), TEAL),
+        kv("write", fmt_rate(s.disk_rate["write"]), BLUE),
+    ], w)
+    out += chart([s.r["dread"], s.r["dwrite"]], w, 3, fmt_rate, [TEAL, BLUE],
+                 labels=["read", "write"])
+    verdict = disk_forecast(s, now)
+    if verdict:
+        out += block("forecast", verdict, w, sep=" ")
+    return out
+
+
+def disk_forecast(s, now):
+    """Only worth saying once there is enough history for a real slope."""
+    ring = s.r["free"]
+    vals = [v for v in ring.v if v is not None]
+    span = len(vals) * ring.interval
+    if len(vals) < 20 or span < 600:
+        return None
+    drop = vals[0] - vals[-1]
+    per_day = drop / span * 86400
+    if per_day <= 1 << 20:
+        return None
+    days = vals[-1] / per_day
+    when = fmt_date(now + days * 86400)
+    return [f"{fg(SOFT_BAD)}Full ~{when}{RST}"] + \
+        words(f"— at {fmt_bytes(per_day)}/day over the last {fmt_dur(span)}", GREY)
+
+
+def network_section(s, w):
+    links = s.get("links") or {}
+    ssid = s.get("ssid") or {}
+    down, up = s.net_totals
+    out = section("network", meta_age(s, "net", "netstat + route"), w)
+
+    primary = links.get("primary")
+    rows = s.real_links()
+    head = next((r for r in rows if r["primary"]), None)
+    segs = []
+    if head:
+        segs.append(kv("", head["label"], WHITE))
+        segs.append(kv("device", head["name"]))
+        segs.append(kv("type", head["kind"]))
+    elif primary:
+        segs.append(kv("", primary, WHITE))
+    out += block("link", segs or [NA], w)
+
+    where = []
+    if head and head.get("ipv4"):
+        where.append(kv("local", head["ipv4"]))
+    if links.get("gateway"):
+        where.append(kv("gateway", links["gateway"]))
+    pub = s.get("pubip")
+    where.append(kv("public", pub if pub else "…", WHITE if pub else GREY))
+    out += block("address", where, w)
+
+    if head and head["kind"] == "wifi":
+        if ssid.get("ssid"):
+            out += block("wi-fi", [kv("", ssid["ssid"], WHITE)], w)
+        elif ssid.get("blocked"):
+            out += block("wi-fi", [f"{fg(SOFT_BAD)}hidden{RST}"] + words(
+                "— grant Location Services to this terminal", GREY), w, sep=" ")
+
+    out += block("rate", [
+        kv("down", fmt_rate(down), TEAL),
+        kv("up", fmt_rate(up), BLUE),
+    ], w)
+    out += chart([s.r["down"], s.r["up"]], w, 3, fmt_rate, [TEAL, BLUE],
+                 labels=["down", "up"])
+
+    if rows:
+        out += [line("", "", w)]
+        out += iface_table(rows, w)
+    talkers = s.get("talkers")
+    if talkers:
+        out += [line("", "", w)]
+        out += talker_table(talkers, w, s)
+    elif talkers is None:
+        out += [line("talkers", C_FAINT + "sampling…" + RST, w)]
+    return out
+
+
+def table_head(cells, w):
+    return line("", "".join(cells), w)
+
+
+def iface_table(rows, w):
+    nw = max(8, w - LABEL_W - 3 * 11 - 16)
+    out = [table_head([C_FAINT + fit("interface", nw) + RST,
+                       C_FAINT + rpad("down", 11) + RST,
+                       C_FAINT + rpad("up", 11) + RST,
+                       C_FAINT + rpad("total in", 11) + RST,
+                       C_FAINT + rpad("out", 11) + RST], w)]
+    for r in rows:
+        name = f"{fg(WHITE if r['primary'] else GREY)}{r['name']}{RST}"
+        tail = f" {C_FAINT}{r['ipv4']}{RST}" if r.get("ipv4") else ""
+        out.append(table_head([
+            fit(name + tail, nw),
+            rpad(fg(TEAL) + fmt_rate(r["down"]) + RST, 11),
+            rpad(fg(BLUE) + fmt_rate(r["up"]) + RST, 11),
+            rpad(C_GREY + fmt_bytes(r["total_in"]) + RST, 11),
+            rpad(C_GREY + fmt_bytes(r["total_out"]) + RST, 11),
+        ], w))
+    return out
+
+
+def talker_table(rows, w, s):
+    nw = max(8, w - LABEL_W - 2 * 11 - 8)
+    out = [table_head([C_FAINT + fit("talkers", nw) + RST,
+                       C_FAINT + rpad("down", 11) + RST,
+                       C_FAINT + rpad("up", 11) + RST], w)]
+    for r in rows:
+        out.append(table_head([
+            fit(f"{C_WHITE}{r['name']}{RST} {C_FAINT}{r['pid']}{RST}", nw),
+            rpad(fg(TEAL) + fmt_rate(r["down"]) + RST, 11),
+            rpad(fg(BLUE) + fmt_rate(r["up"]) + RST, 11),
+        ], w))
+    return out
+
+
+def proc_table(rows, w, by="cpu", title=None):
+    nw = max(8, w - LABEL_W - 20)
+    cols = [C_FAINT + fit(title or ("by cpu" if by == "cpu" else "by memory"), nw) + RST,
+            C_FAINT + rpad("cpu", 9) + RST, C_FAINT + rpad("rss", 11) + RST]
+    out = [table_head(cols, w)]
+    for r in rows:
+        cpu = f"{r['cpu']:.1f}%"
+        out.append(table_head([
+            fit(f"{C_WHITE}{r['name']}{RST} {C_FAINT}{r['pid']}{RST}", nw),
+            rpad(fg(ramp(min(1.0, r["cpu"] / 100)) if by == "cpu" else GREY) + cpu + RST, 9),
+            rpad((C_WHITE if by == "rss" else C_GREY) + fmt_bytes(r["rss"]) + RST, 11),
+        ], w))
+    return out
+
+
+def power_section(s, w, now):
+    p = s.get("power") or {}
+    out = section("power", meta_age(s, "power", "ioreg AppleSmartBattery"), w)
+    if not p.get("present"):
+        return out + [line("", kv("", "no battery — desktop or AC only", GREY), w)]
+    bw = max(10, min(28, w - LABEL_W - 8))
+    out += [line("charge", bar_pct(p["level"], bw, invert=True), w)]
+
+    state = "charging" if p["charging"] else ("on AC" if p["ac"] else "on battery")
+    segs = [kv("", state, OK if p["charging"] else (GREY if p["ac"] else WHITE))]
+    if abs(p["watts"]) > 0.05:
+        flow = "draw" if p["watts"] > 0 else "charge"
+        segs.append(kv(flow, f"{abs(p['watts']):.1f} W", WARN if p["watts"] > 15 else WHITE))
+    segs.append(kv("", f"{p['voltage_mv'] / 1000:.2f} V", GREY))
+    out += block("state", segs, w)
+
+    if p.get("remaining"):
+        kind = "until full" if p["charging"] else "left"
+        out += block("time", [kv(kind, fmt_dur(p["remaining"]), WHITE),
+                              kv("at", fmt_clock(now + p["remaining"], now))], w)
+    elif p["ac"] and p["level"] >= 99:
+        # A finished countdown would keep saying "now"; the moment it finished
+        # is the thing that stays true.
+        when = f" at {fmt_clock(s.charged_at, now)}" if s.charged_at else ""
+        out += block("time", [kv("", "charged" + when, OK)], w)
+
+    health = [f"{fg(ramp(max(0.0, (100 - p['health']) / 30)))}{p['health']:.0f}%{RST}"]
+    if p.get("cycles") is not None:
+        health.append(kv("cycles", str(p["cycles"])))
+    if p.get("design_mah"):
+        health.append(kv("capacity", f"{p['now_mah']:.0f} / {p['design_mah']:.0f} mAh"))
+    out += block("health", health, w)
+    out += chart([s.r["batt"]], w, 3, lambda v: f"{v:.0f}%", [ACCENT])
+    return out
+
+
+def temps_section(s, w):
+    p = s.get("power") or {}
+    out = section("temperatures", meta_age(s, "power", "ioreg"), w)
+    if p.get("temp_c") is not None:
+        t = p["temp_c"]
+        out += block("battery", [f"{fg(ramp(max(0.0, (t - 20) / 30)))}{t:.1f} °C{RST}"], w)
+    else:
+        out += block("battery", [NA], w)
+    out += block("cpu · gpu", [NA] + words(
+        "— macOS keeps the SMC sensors behind root; the widget reads them "
+        "through a private IOKit API that a script cannot reach.", GREY), w, sep=" ")
+    return out
+
+
+def processes_section(s, w):
+    out = section("processes", meta_age(s, "procs", "ps · cpu-time deltas"), w)
+    if not s.procs:
+        return out + [line("", C_FAINT + "sampling…" + RST, w)]
+    if w >= 110:
+        lw, rw = split_w(w, 2, 4)
+        out += columns([proc_table(s.procs[:6], lw, "cpu"),
+                        proc_table(s.procs_by_mem[:6], rw, "rss")], w, 4)
+    else:
+        out += proc_table(s.procs[:6], w, "cpu")
+        out += [line("", "", w)]
+        out += proc_table(s.procs_by_mem[:6], w, "rss")
+    return out
+
+
+# ── help ──────────────────────────────────────────────────────────────────────
+HELP = [
+    ("cpu", "mach host_statistics, every frame", [
+        ("total", "Share of all scheduler ticks that were not idle, across every "
+                  "logical core. 100% means every core was busy."),
+        ("split", "Where the busy ticks went: user code, kernel work on its behalf, "
+                  "idle, and niced (low priority) work. The four add up to 100%."),
+        ("cores", "One glyph per logical core, its height the core's own busy share. "
+                  "E is the efficiency cluster, P the performance one."),
+        ("chart", "Total load over the whole session, averaged into buckets. The "
+                  "ceiling above it is the highest bucket, not 100%."),
+    ]),
+    ("memory", "mach vm_statistics64, every frame", [
+        ("used", "App memory plus wired plus the compressor — what the kernel cannot "
+                 "simply hand back. Cached files are excluded, since those it can."),
+        ("app", "Anonymous pages that are not wired: ordinary process memory."),
+        ("wired", "Pages the kernel may never page out, mostly drivers and the kernel itself."),
+        ("compressed", "Physical memory the compressor occupies. 'holds' is how much "
+                       "it stands for once unpacked."),
+        ("cached", "File-backed and purgeable pages. Counted at half, because half of "
+                   "it is reclaimable on demand."),
+        ("pressure", "How little reclaimable memory is left against a target of a fifth "
+                     "of the machine, with a floor once the compressor gets busy."),
+    ]),
+    ("gpu", "ioreg IOAccelerator, every 2s", [
+        ("device", "IOKit's own 'Device Utilization %' — already a short-window average, "
+                   "which is why reading it faster buys nothing."),
+        ("renderer", "The two halves of that figure: shading work and tiling work."),
+        ("memory", "System memory the GPU has allocated; on Apple Silicon it is the "
+                   "same RAM the CPU uses."),
+    ]),
+    ("disk", "statvfs every 10s, ioreg every 2s", [
+        ("capacity", "The writable APFS volume, not the sealed system root. Free space "
+                     "is what an unprivileged process may actually use."),
+        ("activity", "Bytes per second across every block storage driver, from the "
+                     "difference between two cumulative counters."),
+        ("forecast", "Shown only after ten minutes of history and only while free space "
+                     "is genuinely falling. A short sample would guess."),
+    ]),
+    ("network", "netstat every frame, the rest slower", [
+        ("link", "The interface the default route leaves by, with its hardware port name."),
+        ("public", "The address the internet sees, from one request to api.ipify.org "
+                   "every five minutes. --no-net turns it off."),
+        ("wi-fi", "Without Location Services permission macOS answers the SSID query "
+                  "with the literal string '<redacted>', so a hidden name here is a "
+                  "missing permission, not a missing network."),
+        ("rate", "Bytes per second from the per-interface counters, summed. Loopback "
+                 "and the AirDrop radios are left out."),
+        ("talkers", "Per-process rates from nettop, every 10s. There is no public API "
+                    "for this, and the call itself takes about a second."),
+    ]),
+    ("power", "ioreg AppleSmartBattery, every 15s", [
+        ("charge", "CurrentCapacity, the percentage the menu bar shows."),
+        ("draw", "Voltage times instant current. Positive is leaving the battery."),
+        ("time", "Remaining energy over current draw. Once the battery is full there "
+                 "is nothing to count down, so the time it finished is shown instead."),
+        ("health", "MaxCapacity as a share of design capacity."),
+    ]),
+    ("temperatures", "ioreg, every 15s", [
+        ("battery", "AppleSmartBattery's own sensor, in hundredths of a degree."),
+        ("cpu · gpu", "Not available. The SMC sensors need root (powermetrics) or the "
+                      "private IOKit HID API the widget uses from Rust."),
+    ]),
+    ("processes", "ps, every 3s", [
+        ("cpu", "Percent of one core, from the growth of the process's cumulative CPU "
+                "time between two samples. ps's own %CPU is a lifetime average and "
+                "says nothing about now."),
+        ("rss", "Resident set size: physical memory the process currently occupies."),
+    ]),
+]
+
+
+def help_screen(cols):
+    W = max(40, cols - 1)
+    w = W - 1
+    out = [f"{BOLD}{C_WHITE}flash-top{RST}  {C_GREY}help — what every number means{RST}", ""]
+    for title, meta, items in HELP:
+        out += section(title, meta, w)
+        for term, text in items:
+            wrapped = textwrap.wrap(text, max(20, w - LABEL_W - 1)) or [""]
+            for j, chunk in enumerate(wrapped):
+                out.append(line(term if j == 0 else "", C_GREY + chunk + RST, w, WHITE))
+        out.append("")
+    out = [" " + l for l in out]
+    out.append(" " + fit(f"{C_GREY}h{RST} {C_FAINT}or{RST} {C_GREY}Esc{RST} "
+                         f"{C_FAINT}back to the dashboard{RST}", w))
+    return [fit(l, W) for l in out]
+
+
+# ── frame ─────────────────────────────────────────────────────────────────────
+def render(s, now, cols):
+    # One column short of the edge: a glyph in the last column leaves some
+    # terminals in a pending-wrap state that eats the next line.
+    W = max(40, cols - 1)
+    pad_l = 1
+    w = W - pad_l
+    out = []
+
+    left = f"{BOLD}{C_WHITE}flash-top{RST}  {C_GREY}{s.meta['chip']}{RST}"
+    host = s.meta["host"]
+    up = fmt_dur(now - s.meta["boot"]) if s.meta["boot"] else ""
+    right = f"{C_GREY}{host}{RST}  {C_FAINT}up {up}{RST}  " \
+            f"{C_FAINT}{dt.datetime.fromtimestamp(now):%H:%M:%S}{RST}"
+    gap = w - vis_len(left) - vis_len(right)
+    out.append(left + " " * gap + right if gap >= 2 else fit(left, w))
+    out.append("")
+
+    out += system_section(s, w, now)
+    out.append("")
+    wide = w >= 150
+    pairs = [(cpu_section(s, 0), memory_section(s, 0)),
+             (gpu_section(s, 0), disk_section(s, 0, now)),
+             (network_section(s, 0), power_section(s, 0, now))]
+    if wide:
+        lw, rw = split_w(w, 2, 6)
+        for fn_l, fn_r in (((cpu_section, (s, lw)), (memory_section, (s, rw))),
+                           ((gpu_section, (s, lw)), (disk_section, (s, rw, now))),
+                           ((network_section, (s, lw)), (power_section, (s, rw, now)))):
+            out += columns([fn_l[0](*fn_l[1]), fn_r[0](*fn_r[1])], w, 6)
+            out.append("")
+        out += temps_section(s, w)
+    else:
+        for part in (cpu_section(s, w), memory_section(s, w), gpu_section(s, w),
+                     disk_section(s, w, now), network_section(s, w),
+                     power_section(s, w, now), temps_section(s, w)):
+            out += part
+            out.append("")
+    out += [""] if out and out[-1] != "" else []
+    out += processes_section(s, w)
+
+    out = [" " * pad_l + l for l in out]
+    keys = (f"{C_GREY}q{RST} {C_FAINT}quit{RST}  {C_GREY}↑↓{RST} {C_FAINT}scroll{RST}  "
+            f"{C_GREY}r{RST} {C_FAINT}refresh{RST}  {C_GREY}h{RST} {C_FAINT}help{RST}")
+    out.append(" " + fit(keys, w))
+    return [fit(l, W) for l in out]
+
+
+def term_size(live):
+    """The live tty size when interactive; shutil (which honours $COLUMNS)
+    for a one-shot frame, so a width can be forced for a test.
+
+    A pty opened without a window size reports zeroes, and a frame drawn into
+    a 0x0 terminal is one line tall; fall back when the answer is not usable.
+    """
+    if live:
+        try:
+            size = os.get_terminal_size(sys.stdout.fileno())
+            if size.columns >= 20 and size.lines >= 5:
+                return size
+        except OSError:
+            pass
+    return shutil.get_terminal_size((160, 50))
+
+
+def prime(s, interval, budget):
+    """Two samples make a rate, so a first frame needs more than one of each.
+
+    The workers get a head start, then a second round is forced far enough
+    after the first that the differences mean something; the budget caps the
+    whole thing so `--once` stays quick.
+    """
+    s.tick()
+    s.start()
+    deadline = time.time() + budget
+    needed = ("net", "gpu", "procs", "space", "power", "links")
+    while time.time() < deadline and not all(s.age(k) is not None for k in needed):
+        time.sleep(0.1)
+    time.sleep(min(max(0.2, deadline - time.time()), max(interval, s.MIN_PROC_DT + 0.1)))
+    first = {k: s.stamp.get(k) for k in ("net", "procs", "diskio")}
+    s.refresh_now()
+    while time.time() < deadline + 2 and \
+            any(s.stamp.get(k) == v for k, v in first.items()):
+        time.sleep(0.05)
+    s.tick()
+
+
+# ── main loop ─────────────────────────────────────────────────────────────────
+def main():
+    ap = argparse.ArgumentParser(description="Live system dashboard for the terminal.")
+    ap.add_argument("-i", "--interval", type=float, default=2.0,
+                    help="refresh, seconds (default 2)")
+    ap.add_argument("--once", action="store_true", help="print one frame and exit")
+    ap.add_argument("--no-net", action="store_true",
+                    help="never ask the internet for the public address")
+    ap.add_argument("--wait", type=float, default=6.0,
+                    help="how long --once may wait for the slow sources (default 6)")
+    args = ap.parse_args()
+    interval = max(0.25, args.interval)
+
+    if not DARWIN:
+        print("flash-top reads macOS interfaces; most metrics will read n/a here.",
+              file=sys.stderr)
+
+    s = Sampler(interval, no_net_calls=args.no_net)
+    one_shot = args.once or not sys.stdout.isatty()
+    prime(s, interval, args.wait if one_shot else 1.0)
+
+    if one_shot:
+        print("\n".join(render(s, time.time(), term_size(live=False).columns)))
+        s.shutdown()
+        return
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    signal.signal(signal.SIGWINCH, lambda *_: None)  # wakes select() to redraw
+    # Alt screen, hidden cursor, wheel reporting (hold Option/Shift to select text).
+    sys.stdout.write("\033[?1049h\033[?25l\033[?1000h\033[?1006h")
+    try:
+        tty.setcbreak(fd)
+        # priming already took a sample; ticking again straight away would
+        # measure a millisecond of CPU time and report nonsense for it.
+        next_tick, scroll, show_help = time.time() + interval, 0, False
+        while True:
+            now = time.time()
+            if now >= next_tick:
+                s.tick()
+                next_tick = now + interval
+            size = term_size(live=True)
+            frame = help_screen(size.columns) if show_help else render(s, now, size.columns)
+            # Header and footer stay put; the panels between them scroll.
+            body, view_h = frame[1:-1], max(1, size.lines - 2)
+            scroll = max(0, min(scroll, len(body) - view_h))
+            footer = frame[-1]
+            if len(body) > view_h:  # position first, so a narrow window still shows it
+                footer = (C_GREY + f" {scroll + 1}-{scroll + view_h} of {len(body)} "
+                          + RST + footer)
+            if vis_len(footer) > size.columns - 1:
+                footer = trunc(footer, size.columns - 1)
+            frame = [frame[0]] + body[scroll:scroll + view_h] + [footer]
+            sys.stdout.write("\033[H" + "\n".join(l + "\033[K" for l in frame) + "\033[J")
+            sys.stdout.flush()
+            # Wake at least each second so the clock stays live.
+            wait = max(0.1, min(1.0, next_tick - time.time()))
+            try:
+                ready, _, _ = select.select([sys.stdin], [], [], wait)
+            except InterruptedError:
+                continue
+            if not ready:
+                continue
+            key = os.read(fd, 256).decode(errors="ignore")
+            page = max(1, size.lines - 4)
+            # Mouse wheel (SGR 1006): button 64 up, 65 down; may batch.
+            scroll -= 3 * len(re.findall(r"\033\[<64;", key))
+            scroll += 3 * len(re.findall(r"\033\[<65;", key))
+            for seq, delta in (("\033[A", -1), ("\033[B", 1),
+                               ("\033[5~", -page), ("\033[6~", page)):
+                scroll += delta * key.count(seq)
+            key = re.sub(r"\033\[[0-9;<]*[A-Za-z~]", "", key)  # plain keys only from here
+            if "h" in key or "?" in key or (show_help and "\033" in key):
+                show_help, scroll = not show_help, 0
+                continue
+            scroll += key.count("j") - key.count("k") + page * (key.count(" ") - key.count("b"))
+            if "g" in key:
+                scroll = 0
+            if "G" in key:
+                scroll = 10 ** 6
+            if "r" in key:
+                s.refresh_now()
+                next_tick = 0
+            if "q" in key or "\x03" in key:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\033[?1000l\033[?1006l\033[?25h\033[?1049l")
+        sys.stdout.flush()
+        s.shutdown()
+
+
+if __name__ == "__main__":
+    main()
